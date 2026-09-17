@@ -87,7 +87,8 @@ class Browser:
             except StalePage:
                 if attempt == 9:
                     raise
-                time.sleep(0.02)
+                # Navigation can outlive the fast action loop. Retry observations only, never the mutation.
+                time.sleep(min(0.05 * (attempt + 1), 0.25))
         raise StalePage("Page did not settle")
 
     def fresh(self, page, action=None):
@@ -141,7 +142,11 @@ def browser_operation(request):
         action = request["action"]
         kind = action["kind"]
         if kind == "scroll":
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
+            viewport = evaluate("({width:innerWidth,height:innerHeight})")
+            if not viewport or viewport["width"] <= 0 or viewport["height"] <= 0:
+                raise StalePage("No scrollable viewport")
+            call("Input.dispatchMouseEvent", type="mouseWheel", x=viewport["width"] / 2,
+                 y=viewport["height"] / 2, deltaX=0, deltaY=action["delta"])
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")

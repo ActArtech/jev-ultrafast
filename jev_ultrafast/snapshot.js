@@ -23,7 +23,7 @@
   };
   const roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio',
     'option','gridcell','combobox','textbox','searchbox','spinbutton'];
-  const selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+
+  const selector='a,button,input,textarea,select,summary,[onclick],[tabindex],[contenteditable="true"],'+
     roles.map(role=>'[role="'+role+'"]').join(',');
   const role = e => {
     const explicit=e.getAttribute('role');
@@ -39,6 +39,7 @@
       if (e.type==='number') return 'spinbutton';
       if (['text','email','url','tel'].includes(e.type)) return 'textbox';
     }
+    if (e.hasAttribute('onclick') || e.tabIndex>=0) return 'button';
     return null;
   };
   cache.pageKey=()=>[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
@@ -57,6 +58,8 @@
     if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
     if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
+    // Offer the same hit-testable controls that the executor can actually interact with.
+    if (!e.contains(document.elementFromPoint(x,y))) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
     const base={node:identity(e),role:rname,label:name(e)||rname,
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};

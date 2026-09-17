@@ -1,5 +1,6 @@
 """Local-browser freshness/execution regressions. No model calls or external websites."""
 
+import time
 from urllib.parse import quote
 
 from jev_ultrafast.browser import Browser, StalePage
@@ -21,10 +22,11 @@ def main():
         page = browser.observe(screenshot=False)
         action = next(a for a in page["actions"] if a["label"] == "Continue")
         browser.evaluate("document.querySelector('#target').style.transform='translateX(200px)'")
-        assert browser.fresh(page), "Movement should use fresh geometry, not another model call"
+        assert browser.fresh(page, action), "Movement should preserve the target-specific guard"
         browser.act(action, page)
         assert browser.evaluate("window.clicks") == 1
         passed.append("moving target clicked at its current location")
+        page = browser.observe(screenshot=False)
 
         browser.evaluate("document.querySelector('#outside').textContent='Updated outside the viewport'")
         assert browser.fresh(page)
@@ -53,11 +55,11 @@ def main():
                          "document.querySelector('#target').style.display='block'")
         page = browser.observe(screenshot=False)
         action = next(a for a in page["actions"] if a["label"] == "Delete account")
-        # A textless overlay does not alter the model's semantic state, but must block a click.
+        # A textless overlay removes covered targets from the action table and must block a click.
         browser.evaluate("const cover=document.createElement('div'); "
                          "cover.style.cssText='position:fixed;inset:0;z-index:9999;background:white'; "
                          "document.body.append(cover)")
-        assert browser.fresh(page)
+        assert not browser.fresh(page)
         try:
             browser.act(action, page)
         except (RuntimeError, StalePage):
@@ -124,6 +126,40 @@ def main():
         assert value == "Generated", repr(value)
         assert any(a.get("role") == "option" for a in page["actions"])
         passed.append("real text input waits for asynchronous combobox suggestions")
+        browser.call("Emulation.setDeviceMetricsOverride", width=360, height=400,
+                     deviceScaleFactor=1, mobile=False)
+        browser.evaluate("document.body.innerHTML=" + repr("""
+          <button>Background</button>
+          <div style="position:fixed;inset:0;background:white;z-index:99999">
+            <a onclick="this.parentElement.remove()">Dismiss popup</a>
+          </div>
+          <span onclick="window.customClicked=true">Custom control</span>
+          <div tabindex="0">Focusable control</div>
+        """))
+        page = browser.observe(screenshot=False)
+        assert not any(a["label"] == "Background" for a in page["actions"])
+        dismiss = next(a for a in page["actions"] if a["label"] == "Dismiss popup")
+        browser.act(dismiss, page)
+        page = browser.observe(screenshot=False)
+        assert any(a["label"] == "Background" for a in page["actions"])
+        passed.append("occluded controls are excluded until the popup is dismissed")
+        custom = next(a for a in page["actions"] if a["label"] == "Custom control")
+        browser.act(custom, page)
+        assert browser.evaluate("window.customClicked") is True
+        assert any(a["label"] == "Focusable control" for a in page["actions"])
+        passed.append("scripted anchors and focusable controls expose observed click targets")
+        browser.evaluate("document.body.style.height='2500px';window.scrollTo(0,0)")
+        page = browser.observe(screenshot=False)
+        scroll = next(a for a in page["actions"] if a["id"] == "scroll_down")
+        browser.act(scroll, page)
+        browser.observe(screenshot=False)
+        for _ in range(20):
+            if browser.evaluate("scrollY") > 0:
+                break
+            time.sleep(0.05)
+        assert browser.evaluate("scrollY") > 0, browser.evaluate(
+            "({width:innerWidth,height:innerHeight,scrollHeight:document.documentElement.scrollHeight})")
+        passed.append("scrolling works below the former fixed 650-pixel input coordinate")
         browser.call("Page.navigate", url="about:blank")
         assert not browser.fresh(page, field)
         passed.append("navigation invalidates the old document")
