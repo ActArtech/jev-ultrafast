@@ -20,7 +20,7 @@
       [...(e.labels||[])].map(l=>name(l,seen)).filter(Boolean).join(' ') ||
       (['button','submit','reset'].includes(e.type) ? e.value : '') || e.getAttribute('alt') ||
       (e.tagName==='INPUT' ? '' : [...e.childNodes].map(n=>n.nodeType===3 ? n.textContent :
-        n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ')) ||
+        n.nodeType===1 && visible(n) ? name(n,seen) : '').join(' ')) ||
       e.getAttribute('title') || e.getAttribute('placeholder') || e.getAttribute('name') || '');
   };
   const roots=[document], frames=[], missing=[];
@@ -134,11 +134,13 @@
       const editable=!e.readOnly && e.getAttribute('aria-readonly')!=='true' &&
         (['textbox','searchbox','spinbutton'].includes(rname) ||
           (rname==='combobox' && ['INPUT','TEXTAREA'].includes(e.tagName)));
-      actions.push({...base,kind:editable?'fill':'click'});
-      if (editable) actions.push({...base,kind:'click',label:'Open '+base.label});
+      actions.push({...base,kind:editable?'fill':e.tagName==='A' && e.target==='_blank' && /^https?:/.test(e.href)?'open_link':'click'});
+      if (editable && rname==='combobox') actions.push({...base,kind:'click',label:'Open '+base.label});
     }
   }
-  const words=[], full=[], focus=document.activeElement; let length=0,fullLength=0;
+  const words=[], full=[]; let focus=document.activeElement, length=0,fullLength=0;
+  if (!focus || ['BODY','HTML'].includes(focus.tagName)) focus=null;
+  while (focus?.shadowRoot?.activeElement) focus=focus.shadowRoot.activeElement;
   for (const root of roots) {
     const doc=root.ownerDocument||root, walker=doc.createTreeWalker(root.body||root,NodeFilter.SHOW_TEXT);
     const range=doc.createRange(); let node;
@@ -172,6 +174,6 @@
   actions.push({id:'wait',kind:'wait',label:'Wait briefly for loading or new controls'});
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
     document_text:full.join('\n').slice(0,16000),ready_state:document.readyState,
-    unsupported_frames:missing,frame_count:frames.length,focus:focus ? name(focus) : '',
+    unsupported_frames:missing,frame_count:frames.length,focus:focus ? {node:identity(focus),role:role(focus),label:name(focus)} : null,
     scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
 })()

@@ -39,7 +39,9 @@ scrolling to an offscreen control, page scrolling, Enter/Escape, back, reload, w
 an authorized plain-text sample file for a file input. The text helper runs only when a value is needed.
 
 The state includes up to 16,000 characters of rendered document text, current viewport text, up to 240
-observed actions, twelve recent actions, and bounded evidence from previous pages. Open shadow roots and
+observed actions, twelve recent actions, and bounded evidence from previous pages. Model requests compact
+repeated labels and context to a 28,000-character budget; omitted controls are counted, with required
+and goal-relevant controls prioritized. Empty page-body focus never contributes hidden success text. Open shadow roots and
 same-origin frames are traversed. Recently repeated controls are temporarily omitted; rejected values
 become feedback. The first BLOCKED choice gets one fresh observation, and three unchanged actions produce
 recovery feedback instead of immediately ending the task. The action and decision budgets still apply.

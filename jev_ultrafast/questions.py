@@ -21,6 +21,8 @@ BLOCKED is a last resort after reasonable supported recovery, not a statement th
 TEXT_VALUE = """Return exactly one JSON object: {"text": "the value"}. No Markdown or commentary.
 Write the exact value for the selected field from the original goal, input type, nearby context and history.
 For search, write a concise useful search query, not the entire goal. Preserve required site/date constraints.
+The goal's final-answer format is NOT a field value: "answer with an integer" does not mean type an integer
+into Search. Research an unknown person using the given clues; never invent a person's name for the query.
 For SET_VALUE use HTML's native format: date YYYY-MM-DD, time HH:MM, month YYYY-MM, week YYYY-Www,
 datetime-local YYYY-MM-DDTHH:MM, range a numeric string within min/max (defaults 0/100).
 For UPLOAD_FILE, text is the content of a new plain-text sample file, only if creating a sample is authorized.

@@ -6,6 +6,7 @@ from jev_ultrafast.browser import Browser
 
 HTML = '''<!doctype html><title>State/action checks</title>
 <style>body{margin:30px}input,button{min-height:28px}</style>
+<div style="display:none">Hidden success sentinel: completed successfully</div>
 <label>Email <input id="email" type="email" required></label>
 <label>Date <input id="date" type="date" required></label>
 <label>Volume <input id="range" type="range" min="1" max="9" value="1"></label>
@@ -24,6 +25,10 @@ def main():
         b.evaluate("document.querySelector('#frame').srcdoc=" + json.dumps(
             '<label>Frame value <input></label><button onclick="window.hit=true">Frame button</button>'))
         page = b.observe(screenshot=False)
+        assert page['focus'] is None
+        assert 'Hidden success sentinel' not in json.dumps({
+            k: page.get(k) for k in ['text', 'document_text', 'focus', 'actions']})
+        passed.append('hidden success text never leaks through body focus or model state')
         for _ in range(10):
             if any(a['label'] == 'Frame value' for a in page['actions']):
                 break

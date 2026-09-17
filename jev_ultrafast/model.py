@@ -50,7 +50,7 @@ def action_space(actions):
     """One index per observed element; each operation has its own valid target choices."""
     elements, indices, targets, controls = [], {}, {}, {}
     operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT",
-                  "scroll_to": "SCROLL_TO", "set_value": "SET_VALUE", "upload": "UPLOAD_FILE"}
+                  "scroll_to": "SCROLL_TO", "set_value": "SET_VALUE", "upload": "UPLOAD_FILE", "open_link": "OPEN_LINK"}
     for action in actions:
         kind = action["kind"]
         if kind not in operations:
@@ -84,7 +84,7 @@ def action_space(actions):
 
 def choose(state, goal, history):
     """Rank executable operation/target pairs jointly, so independent heads cannot disagree."""
-    elements, targets, controls = action_space(state["actions"])
+    _, targets, controls = action_space(state["actions"])
     actions, criteria = {}, {}
     for operation, candidates in targets.items():
         for index, action in candidates.items():
@@ -122,6 +122,7 @@ def choose(state, goal, history):
         },
         "questions": {"action": {"type": "choice", "criteria": criteria, "instructions": NEXT_ACTION}},
     }
+    compact_request(body)
     started = time.perf_counter()
     result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
     answer = validate_choice(result["answers"].get("action", {}), criteria)
@@ -145,6 +146,56 @@ def choose(state, goal, history):
         "usage": result.get("usage", {}), "latency_ms": round((time.perf_counter() - started) * 1000),
         "request": body,
     }
+
+
+def compact_request(body, max_chars=28000):
+    """Bound redundant context and choice metadata; report every omitted observed action."""
+    state = body["state"]
+    page = state["page"]
+    for key, limit in (("text", 3500), ("document_text", 7000)):
+        if key in page:
+            page[key] = page[key][:limit]
+    state["previous_evidence"] = [dict(url=p["url"], text=p["text"][:1000])
+                                  for p in state["previous_evidence"][-3:]]
+    for h in state["recent_actions"]:
+        for key, value in h.items():
+            if isinstance(value, str):
+                h[key] = value[:220]
+    criteria = body["questions"]["action"]["criteria"]
+    for value in criteria.values():
+        if not isinstance(value, dict):
+            continue
+        for key in list(value):
+            if value[key] is None or value[key] == "" or (value[key] is False and key == "required"):
+                del value[key]
+            elif isinstance(value[key], str):
+                value[key] = value[key][:180 if key == "target" else 120]
+
+    def size():
+        return len(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
+
+    if size() > max_chars:
+        state["previous_evidence"] = state["previous_evidence"][-1:]
+        page["document_text"] = page.get("document_text", "")[:3500]
+        for value in criteria.values():
+            if isinstance(value, dict):
+                value.pop("context", None)
+                value.pop("href", None)
+    # Prefer relevant controls when the page has more choices than fit the context window.
+    terms = set(re.findall(r"[\w]{3,}", state["goal"].lower()))
+    removable = [(key, value) for key, value in criteria.items() if isinstance(value, dict)]
+    removable.sort(key=lambda item: (
+        bool(item[1].get("required")),
+        len(terms & set(re.findall(r"[\w]{3,}", str(item[1].get("target", "")).lower()))),
+        item[1].get("operation") != "SCROLL_TO",
+    ))
+    omitted = 0
+    while size() > max_chars and removable:
+        key, _ = removable.pop(0)
+        del criteria[key]
+        omitted += 1
+    state["page"]["context_truncated"] = True
+    state["page"]["omitted_actions"] = state["page"].get("omitted_actions", 0) + omitted
 
 
 def parse_json_object(content):

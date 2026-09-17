@@ -6,7 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from browser_harness.admin import daemon_browser_ready, ensure_daemon
 from browser_harness.helpers import cdp
@@ -106,7 +106,7 @@ class Browser:
         raise StalePage("Page did not settle")
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select"}:
+        if action is not None and action["kind"] in {"click", "select", "open_link"}:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -158,7 +158,12 @@ def browser_operation(request):
     if operation == "act":
         action = request["action"]
         kind = action["kind"]
-        if kind == "search":
+        if kind == "open_link":
+            href = evaluate(f"window.__jevFast?.nodes.get({int(action['node'])})?.href")
+            if href != action.get("href") or urlsplit(href).scheme not in {"http", "https"}:
+                raise StalePage("Observed link changed before navigation")
+            call("Page.navigate", url=href)
+        elif kind == "search":
             if not isinstance(request.get("text"), str) or not request["text"].strip():
                 raise ValueError("A search needs a generated query")
             call("Page.navigate", url="https://www.bing.com/search?q=" + quote(request["text"]))

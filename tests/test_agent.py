@@ -468,3 +468,46 @@ def test_fingerprint_ignores_animation_geometry():
     other = deepcopy(p)
     other['actions'][0]['rect'] = {'x': 15, 'y': 40, 'w': 20, 'h': 10}
     assert fingerprint(p) == fingerprint(other)
+
+
+def test_large_state_is_bounded_without_changing_goal_or_inventing_actions(monkeypatch):
+    p = page()
+    p['text'] = 'Visible text ' * 1000
+    p['document_text'] = 'Large document ' * 2000
+    p['memory'] = [{'url': 'https://source.test', 'text': 'evidence ' * 1000}] * 8
+    p['actions'] = [{'id': f'a{i}', 'node': i, 'kind': 'click', 'role': 'button',
+                     'label': 'A long repeated label ' * 20, 'context': 'Nearby page text ' * 100}
+                    for i in range(240)]
+    offered = {a['id'] for a in p['actions']} | {'DONE', 'BLOCKED'}
+
+    def post(_url, _key, body):
+        criteria = body['questions']['action']['criteria']
+        assert set(criteria) <= offered
+        assert len(json.dumps(body, ensure_ascii=False, separators=(',', ':'))) <= 28200
+        assert body['state']['goal'] == 'Do the requested thing'
+        assert body['state']['page']['omitted_actions'] > 0
+        return {'model': 'test', 'answers': {'action': choice(criteria, next(iter(criteria)))}}
+
+    monkeypatch.setenv('TYPESAFE_API_KEY', 'test')
+    monkeypatch.setattr(model, 'post_json', post)
+    assert model.choose(p, 'Do the requested thing', [])['operation'] == 'CLICK'
+
+
+def test_open_link_uses_exact_observed_http_url(monkeypatch):
+    from jev_ultrafast import browser
+    cdp = Mock(side_effect=[{'result': {'value': 'https://example.test/article'}}, {}])
+    monkeypatch.setattr(browser, 'cdp', cdp)
+    browser.browser_operation({'operation': 'act', 'session': 'test', 'action': {
+        'kind': 'open_link', 'id': 'link', 'node': 9, 'href': 'https://example.test/article'}})
+    assert cdp.call_args.args == ('Page.navigate',)
+    assert cdp.call_args.kwargs['url'] == 'https://example.test/article'
+
+
+def test_changed_link_cannot_navigate(monkeypatch):
+    from jev_ultrafast import browser
+    cdp = Mock(return_value={'result': {'value': 'https://other.test/'}})
+    monkeypatch.setattr(browser, 'cdp', cdp)
+    with pytest.raises(StalePage):
+        browser.browser_operation({'operation': 'act', 'session': 'test', 'action': {
+            'kind': 'open_link', 'id': 'link', 'node': 9, 'href': 'https://example.test/article'}})
+    assert cdp.call_count == 1
