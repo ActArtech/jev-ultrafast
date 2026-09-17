@@ -400,3 +400,14 @@ def test_remote_response_deadline_does_not_retry_mutations(monkeypatch):
         b.call("Page.navigate", url="https://example.test")
     cdp.assert_called_once_with("Page.navigate", session_id="test", _response_timeout=30,
                                 url="https://example.test")
+
+
+def test_optional_screenshot_keeps_its_short_deadline(monkeypatch):
+    from jev_ultrafast import browser
+
+    b = browser.Browser.__new__(browser.Browser)
+    b.session = "test"
+    cdp = Mock(return_value={"data": "image"})
+    monkeypatch.setattr(browser, "cdp", cdp)
+    b.call("Page.captureScreenshot", format="jpeg")
+    cdp.assert_called_once_with("Page.captureScreenshot", session_id="test", _response_timeout=5, format="jpeg")

@@ -39,7 +39,8 @@ class Browser:
             time.sleep(0.02)
 
     def call(self, method, **params):
-        return cdp(method, session_id=self.session, _response_timeout=CDP_RESPONSE_TIMEOUT, **params)
+        timeout = 5 if method == "Page.captureScreenshot" else CDP_RESPONSE_TIMEOUT
+        return cdp(method, session_id=self.session, _response_timeout=timeout, **params)
 
     def evaluate(self, expression):
         response = self.call("Runtime.evaluate", expression=expression, returnByValue=True)
@@ -129,7 +130,8 @@ def browser_operation(request):
     session = request["session"]
 
     def call(method, **params):
-        return cdp(method, session_id=session, _response_timeout=CDP_RESPONSE_TIMEOUT, **params)
+        timeout = 5 if method == "Page.captureScreenshot" else CDP_RESPONSE_TIMEOUT
+        return cdp(method, session_id=session, _response_timeout=timeout, **params)
 
     def evaluate(expression):
         result = call("Runtime.evaluate", expression=expression, returnByValue=True)
