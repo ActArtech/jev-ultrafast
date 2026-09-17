@@ -6,6 +6,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 from browser_harness.admin import daemon_browser_ready, ensure_daemon
 from browser_harness.helpers import cdp
@@ -19,6 +20,10 @@ class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
 
 
+class InvalidValue(ValueError):
+    """The proposed field value was rejected before any input."""
+
+
 class Browser:
     def __init__(self, url):
         if os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1":
@@ -28,6 +33,9 @@ class Browser:
             ensure_daemon()
         self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
+        if os.environ.get("JEV_ACTIVATE_OWNED_TAB") == "1":
+            # Only isolated evaluation browsers opt in; local user tabs stay in the background.
+            cdp("Target.activateTarget", targetId=self.target)
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
@@ -83,9 +91,13 @@ class Browser:
                 pass
         for attempt in range(10):
             try:
-                return browser_operation(
+                page = browser_operation(
                     {"operation": "observe", "session": self.session, "screenshot": screenshot}
                 )
+                if attempt < 9 and not page["text"].strip() and not any(a.get("node") for a in page["actions"]):
+                    time.sleep(0.2)
+                    continue
+                return page
             except StalePage:
                 if attempt == 9:
                     raise
@@ -109,7 +121,7 @@ class Browser:
         if not self.fresh(page, action):
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
-            time.sleep(0.1)
+            time.sleep(0.3)
         result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
         self.after_input = action if action["kind"] != "wait" else None
         return result
@@ -122,6 +134,8 @@ class Browser:
 
 def fingerprint(state):
     content = {k: state[k] for k in ("url", "text", "actions", "scroll")}
+    content["actions"] = [{k: v for k, v in a.items() if k != "rect"} for a in state["actions"]]
+    content["document_text"] = state.get("document_text", "")
     return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
 
@@ -136,7 +150,7 @@ def browser_operation(request):
     def evaluate(expression):
         result = call("Runtime.evaluate", expression=expression, returnByValue=True)
         if result.get("exceptionDetails"):
-            if operation == "act" and request["action"]["kind"] == "select":
+            if operation == "act" and request["action"]["kind"] in {"select", "set_value", "scroll_to", "upload"}:
                 raise RuntimeError("Dropdown execution was interrupted; inspect before retrying.")
             raise StalePage("Document changed during evaluation")
         return result.get("result", {}).get("value")
@@ -144,7 +158,40 @@ def browser_operation(request):
     if operation == "act":
         action = request["action"]
         kind = action["kind"]
-        if kind == "scroll":
+        if kind == "search":
+            if not isinstance(request.get("text"), str) or not request["text"].strip():
+                raise ValueError("A search needs a generated query")
+            call("Page.navigate", url="https://www.bing.com/search?q=" + quote(request["text"]))
+        elif kind == "back":
+            history = call("Page.getNavigationHistory")
+            index = history["currentIndex"]
+            if index > 0:
+                call("Page.navigateToHistoryEntry", entryId=history["entries"][index - 1]["id"])
+        elif kind == "reload":
+            call("Page.reload")
+        elif kind == "key":
+            if action["key"] not in {"Enter", "Escape"}:
+                raise ValueError("Unsupported key")
+            code = 13 if action["key"] == "Enter" else 27
+            for event in ("keyDown", "keyUp"):
+                call("Input.dispatchKeyEvent", type=event, key=action["key"], code=action["key"],
+                     windowsVirtualKeyCode=code, nativeVirtualKeyCode=code)
+        elif kind == "scroll_to":
+            result = evaluate("""(node => {
+              const e=window.__jevFast?.nodes.get(node);
+              if (!e?.isConnected) return false;
+              e.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
+              let doc=e.ownerDocument;
+              while (doc!==document) {
+                const frame=doc.defaultView.frameElement;
+                frame.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
+                doc=frame.ownerDocument;
+              }
+              return true;
+            })(""" + json.dumps(action["node"]) + ")")
+            if not result:
+                raise RuntimeError("Scroll target no longer available; inspect before retrying")
+        elif kind == "scroll":
             viewport = evaluate("({width:innerWidth,height:innerHeight})")
             if not viewport or viewport["width"] <= 0 or viewport["height"] <= 0:
                 raise StalePage("No scrollable viewport")
@@ -159,9 +206,13 @@ def browser_operation(request):
               if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
                   !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
               if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
-              const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
-              if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
-              if (!e.contains(document.elementFromPoint(x,y))) return null;
+              const g=window.__jevFast.geometry(e);
+              if (!g?.within) return null;
+              const {x,y}=g;
+              if (action.kind==='fill' && e.tagName==='INPUT' && ['email','number','url'].includes(e.type)) {
+                const clone=e.cloneNode(); clone.value=action.text;
+                if (!clone.checkValidity() || clone.value!==action.text) return {invalid:true};
+              }
               if (action.kind==='select') {
                 if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
                     !o.disabled && !o.closest('optgroup[disabled]'))) return null;
@@ -169,13 +220,36 @@ def browser_operation(request):
                 e.dispatchEvent(new Event('input',{bubbles:true}));
                 e.dispatchEvent(new Event('change',{bubbles:true}));
               }
+              if (action.kind==='set_value') {
+                if (!['date','datetime-local','time','month','week','range'].includes(e.type) || e.readOnly)
+                  return null;
+                const clone=e.cloneNode(); clone.value=action.text;
+                if (clone.value!==action.text || !clone.checkValidity()) return {invalid:true};
+                const win=e.ownerDocument.defaultView;
+                Object.getOwnPropertyDescriptor(win.HTMLInputElement.prototype,'value').set.call(e,action.text);
+                e.dispatchEvent(new win.Event('input',{bubbles:true}));
+                e.dispatchEvent(new win.Event('change',{bubbles:true}));
+              }
+              if (action.kind==='upload') {
+                if (e.type!=='file' || typeof action.text!=='string' || !action.text.trim()) return {invalid:true};
+                const accepts=e.accept.toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
+                if (accepts.length && !accepts.some(s=>['.txt','text/plain','text/*','*/*'].includes(s)))
+                  return {invalid:true};
+                const win=e.ownerDocument.defaultView, transfer=new win.DataTransfer();
+                transfer.items.add(new win.File([action.text],'sample.txt',{type:'text/plain'}));
+                e.files=transfer.files;
+                e.dispatchEvent(new win.Event('input',{bubbles:true}));
+                e.dispatchEvent(new win.Event('change',{bubbles:true}));
+              }
               return {x,y};
-            })(""" + json.dumps(action) + ")")
+            })(""" + json.dumps({**action, "text": request.get("text")}) + ")")
             if target is None:
-                if kind == "select":
+                if kind in {"select", "set_value", "upload"}:
                     raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
                 raise StalePage("Target changed or is covered. Observe again.")
-            if kind != "select":
+            if target.get("invalid"):
+                raise InvalidValue("Generated value violates the observed input constraints; nothing entered")
+            if kind not in {"select", "set_value", "upload"}:
                 x, y = target["x"], target["y"]
                 for event in ("mousePressed", "mouseReleased"):
                     call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)

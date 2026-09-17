@@ -4,7 +4,7 @@ import base64
 import time
 from pathlib import Path
 
-from .browser import Browser, StalePage
+from .browser import Browser, InvalidValue, StalePage
 from .model import action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
 
@@ -38,6 +38,9 @@ class Agent:
             plan_index=0,
             decisions=[],
             text_calls=[],
+            memory=[],
+            text_errors=[],
+            recoveries=[],
             elapsed_ms=0,
             started_at=None,
             record=bool(self.record_dir),
@@ -77,6 +80,7 @@ class Agent:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= self.max_steps * 2:
                 raise ValueError("Reached the demo's model-call budget")
+            state["page"]["memory"] = [p for p in state.get("memory", []) if p["url"] != state["page"]["url"]][-6:]
             state["decision"] = choose(state["page"], state["goal"], state["history"])
             state["decisions"].append(
                 {
@@ -97,6 +101,19 @@ class Agent:
                 if not state["browser"].fresh(page):
                     state["status"] = "ready"
                     raise StalePage("Page changed since the decision. Choose again.")
+                if selected == "BLOCKED" and not state.get("recoveries"):
+                    # One fresh look handles hydration/temporary blank pages; no browser mutation is replayed.
+                    state.setdefault("recoveries", []).append({"reason": "First BLOCKED re-observation"})
+                    time.sleep(0.5)
+                    state["page"] = state["browser"].observe(screenshot=self.screenshots)
+                    state["page"]["feedback"] = (
+                        "Previous choice was BLOCKED. Check newly loaded controls, dismiss a blocking dialog, "
+                        "scroll to relevant controls, or use Back/Search for another source. "
+                        "Do not repeat a failed action."
+                    )
+                    state["status"] = "ready"
+                    state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+                    return self.snapshot()
                 state["status"] = "done" if selected == "DONE" else "blocked"
                 state["plan_index"] = int(selected == "DONE")
                 state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
@@ -106,18 +123,36 @@ class Agent:
                 state["status"] = "blocked"
                 raise ValueError(f"Stopped at the {self.max_steps}-action budget")
             text, helper = None, None
-            if action["kind"] == "fill":
+            if action["kind"] in {"fill", "set_value", "upload", "search"}:
                 if not state["browser"].fresh(page):
                     raise StalePage("Page changed before text generation. Choose again.")
                 context = field_context(state["goal"], action, page, state["history"])
                 if self.pending_text and self.pending_text[0] == context:
                     _, text, helper = self.pending_text
                 else:
-                    text, helper = field_text(context)
+                    try:
+                        text, helper = field_text(context)
+                    except ValueError as exc:
+                        # Missing/invalid text is feedback, not an automatic whole-task failure.
+                        state.setdefault("text_errors", []).append({"field": action["label"], "error": str(exc)})
+                        page.setdefault("rejected_actions", []).append(selected)
+                        page["feedback"] = f"Cannot fill {action['label']}: {exc}. Choose another useful action."
+                        state["status"] = "ready"
+                        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+                        return self.snapshot()
                     self.pending_text = (context, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
             # Browser.act checks freshness immediately before input, including after text generation.
-            state["browser"].act(action, page, text=text)
+            try:
+                state["browser"].act(action, page, text=text)
+            except InvalidValue as exc:
+                self.pending_text = None
+                state.setdefault("text_errors", []).append({"field": action["label"], "error": str(exc)})
+                page.setdefault("rejected_actions", []).append(selected)
+                page["feedback"] = f"Cannot enter {action['label']}: {exc}. Choose another useful action."
+                state["status"] = "ready"
+                state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
+                return self.snapshot()
             self.pending_text = None
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             # Record execution before observing. A stale post-action observation must not erase the action.
@@ -142,6 +177,12 @@ class Agent:
                     "elapsed_ms": state["elapsed_ms"],
                 }
             )
+            evidence = {"url": page["url"], "text": page.get("document_text", page["text"])[:4000]}
+            memory = state.setdefault("memory", [])
+            if evidence["text"]:
+                memory[:] = [p for p in memory if p["url"] != evidence["url"]]
+                memory.append(evidence)
+                del memory[:-8]
             state["page"] = state["browser"].observe(screenshot=self.screenshots)
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             state["history"][-1].update(
@@ -154,11 +195,11 @@ class Agent:
                     base64.b64decode(state["page"]["screenshot"])
                 )
             repeated = state["history"][-3:]
-            state["status"] = (
-                "blocked"
-                if len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated)
-                else "ready"
-            )
+            state["status"] = "ready"
+            if len(repeated) == 3 and all(h["page_changed"] is False and h["kind"] != "wait" for h in repeated):
+                state["page"]["feedback"] = (
+                    "The last three actions changed nothing. Try a different control or recovery."
+                )
         else:
             raise ValueError("Unknown command")
         return self.snapshot()

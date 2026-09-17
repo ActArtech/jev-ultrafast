@@ -29,8 +29,8 @@ def main():
         page = browser.observe(screenshot=False)
 
         browser.evaluate("document.querySelector('#outside').textContent='Updated outside the viewport'")
-        assert browser.fresh(page)
-        passed.append("unrelated offscreen text does not invalidate")
+        assert not browser.fresh(page)
+        passed.append("changed offscreen evidence invalidates a full-document decision")
 
         mutations = {
             "visible context": "document.querySelector('#context').textContent='Cart total: $100'",

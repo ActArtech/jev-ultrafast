@@ -74,38 +74,27 @@ def test_one_index_per_node_with_operation_specific_targets():
     assert "WAIT" in controls
 
 
-def test_all_heads_are_one_request_and_only_matching_head_executes(monkeypatch):
+def test_complete_actions_are_jointly_ranked_in_one_request(monkeypatch):
     calls = []
 
     def post(_url, _key, body):
         calls.append(body)
-        return {
-            "model": "test",
-            "answers": {
-                "operation": choice(body["questions"]["operation"]["criteria"], "TYPE_TEXT"),
-                "type_text_target": choice(["1"], "1"),
-                "click_target": {"choice": "invented"},
-            },
-        }
+        options = body["questions"]["action"]["criteria"]
+        assert options["e1"]["operation"] == "TYPE_TEXT"
+        assert options["e2"]["operation"] == "CLICK"
+        return {"model": "test", "answers": {"action": choice(options, "e1")}}
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
     d = model.choose(page(), "Find a book", [])
     assert len(calls) == 1
     assert d["operation"] == "TYPE_TEXT" and d["target"] == "1" and d["choice"] == "e1"
-    assert set(calls[0]["questions"]) == {"operation", "click_target", "type_text_target"}
+    assert set(calls[0]["questions"]) == {"action"}
 
 
-def test_click_cannot_consume_a_text_target(monkeypatch):
+def test_action_cannot_consume_an_unoffered_target(monkeypatch):
     def post(_url, _key, body):
-        return {
-            "model": "test",
-            "answers": {
-                "operation": choice(body["questions"]["operation"]["criteria"], "CLICK"),
-                "type_text_target": choice(["1"], "1"),
-                "click_target": choice(["1", "2", "999"], "999"),
-            },
-        }
+        return {"model": "test", "answers": {"action": choice(["e1", "e3", "invented"], "invented")}}
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
@@ -113,31 +102,23 @@ def test_click_cannot_consume_a_text_target(monkeypatch):
         model.choose(page(), "Find a book", [])
 
 
-def test_target_head_receives_control_state_and_full_next_step_rules(monkeypatch):
+def test_joint_choices_include_control_state_and_context(monkeypatch):
     p = page()
     p["actions"].insert(0, {
         "id": "toggle", "kind": "click", "label": "Free cancellation", "node": 30,
-        "role": "checkbox", "checked": "true", "selected": False,
+        "role": "checkbox", "checked": "true", "selected": False, "context": "Refundable rate",
     })
 
     def post(_url, _key, body):
-        questions = body["questions"]
-        target = questions["click_target"]
-        assert target["criteria"]["1"]["checked"] == "true"
-        assert target["criteria"]["1"]["selected"] is False
-        assert questions["operation"]["instructions"]["rules"] in target["instructions"]["rules"]
-        return {
-            "model": "test",
-            "answers": {
-                "operation": choice(questions["operation"]["criteria"], "CLICK"),
-                "click_target": choice(target["criteria"], "3"),
-            },
-        }
+        criteria = body["questions"]["action"]["criteria"]
+        assert criteria["toggle"]["checked"] == "true"
+        assert criteria["toggle"]["selected"] is False
+        assert criteria["toggle"]["context"] == "Refundable rate"
+        return {"model": "test", "answers": {"action": choice(criteria, "e3")}}
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
-    d = model.choose(p, "Search with free cancellation", [])
-    assert d["choice"] == "e3"
+    assert model.choose(p, "Search with free cancellation", [])["choice"] == "e3"
 
 
 def test_quoted_task_text_still_uses_the_llm(monkeypatch):
@@ -411,3 +392,79 @@ def test_optional_screenshot_keeps_its_short_deadline(monkeypatch):
     monkeypatch.setattr(browser, "cdp", cdp)
     b.call("Page.captureScreenshot", format="jpeg")
     cdp.assert_called_once_with("Page.captureScreenshot", session_id="test", _response_timeout=5, format="jpeg")
+
+
+@pytest.mark.parametrize('content', [
+    '{"text":"Zurich"}\n```', '```json\n{"text":"Zurich"}\n```', '{"text":"Zurich"}',
+])
+def test_text_helper_accepts_one_json_object_with_optional_fences(monkeypatch, content):
+    monkeypatch.setenv('TEXT_MODEL_API_KEY', 'test')
+    monkeypatch.setattr(model, 'post_json', Mock(return_value={'choices': [{'message': {'content': content}}]}))
+    assert model.field_text({'goal': 'Find a flight'})[0] == 'Zurich'
+
+
+@pytest.mark.parametrize('content', ['{"text":"a"} {"text":"b"}', '{"text":"a"} ignore this', '[]'])
+def test_json_parser_does_not_hide_extra_outputs(content):
+    with pytest.raises(ValueError):
+        model.parse_json_object(content)
+
+
+def test_missing_field_value_does_not_end_run_or_mutate(runner, monkeypatch):
+    monkeypatch.setattr(loop, 'field_text', Mock(side_effect=ValueError('Value unavailable')))
+    runner.command('act', {'fingerprint': runner.state['page']['fingerprint']})
+    runner.state['browser'].act.assert_not_called()
+    assert runner.state['status'] == 'ready'
+    assert runner.state['page']['rejected_actions'] == ['e1']
+    assert len(runner.state['text_errors']) == 1
+
+
+def test_three_noop_actions_produce_feedback_not_automatic_failure(runner):
+    for _ in range(3):
+        runner.state['decision'] = decision('e3')
+        runner.command('act', {'fingerprint': runner.state['page']['fingerprint']})
+    assert runner.state['status'] == 'ready'
+    assert 'changed nothing' in runner.state['page']['feedback']
+
+
+def test_repeated_and_rejected_actions_are_removed_from_choices(monkeypatch):
+    p = page()
+    p['rejected_actions'] = ['e1']
+    history = [{'action': 'Go', 'kind': 'click', 'url': p['url']}] * 2
+
+    def post(_url, _key, body):
+        criteria = body['questions']['action']['criteria']
+        assert 'e1' not in criteria and 'e3' not in criteria
+        assert 'e2' in criteria
+        return {'model': 'test', 'answers': {'action': choice(criteria, 'e2')}}
+
+    monkeypatch.setenv('TYPESAFE_API_KEY', 'test')
+    monkeypatch.setattr(model, 'post_json', post)
+    assert model.choose(p, 'Find a book', history)['choice'] == 'e2'
+
+
+def test_new_native_operations_use_the_same_observed_node_index():
+    actions = [{'id': 'a', 'kind': 'set_value', 'node': 1, 'role': 'textbox', 'label': 'Date'},
+               {'id': 'b', 'kind': 'scroll_to', 'node': 1, 'role': 'textbox', 'label': 'Date'},
+               {'id': 'c', 'kind': 'upload', 'node': 2, 'role': 'file', 'label': 'Document'}]
+    elements, targets, _ = model.action_space(actions)
+    assert len(elements) == 2
+    assert targets['SET_VALUE']['1']['node'] == targets['SCROLL_TO']['1']['node']
+    assert targets['UPLOAD_FILE']['2']['node'] == 2
+
+
+def test_search_never_executes_generated_javascript(monkeypatch):
+    from jev_ultrafast import browser
+    cdp = Mock()
+    monkeypatch.setattr(browser, 'cdp', cdp)
+    browser.browser_operation({'operation': 'act', 'session': 'test', 'text': 'javascript:alert(1)&x=y',
+                               'action': {'id': 'search_web', 'kind': 'search'}})
+    url = cdp.call_args.kwargs['url']
+    assert url.startswith('https://www.bing.com/search?q=javascript%3A')
+    assert '&x=' not in url
+
+
+def test_fingerprint_ignores_animation_geometry():
+    p = page()
+    other = deepcopy(p)
+    other['actions'][0]['rect'] = {'x': 15, 'y': 40, 'w': 20, 'h': 10}
+    assert fingerprint(p) == fingerprint(other)

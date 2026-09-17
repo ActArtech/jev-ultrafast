@@ -3,11 +3,12 @@
 import json
 import math
 import os
+import re
 import time
 
 import httpx
 
-from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
+from .questions import NEXT_ACTION, TEXT_VALUE
 
 CLIENT = httpx.Client(http2=True, timeout=25)
 
@@ -48,7 +49,8 @@ def validate_choice(answer, ids):
 def action_space(actions):
     """One index per observed element; each operation has its own valid target choices."""
     elements, indices, targets, controls = [], {}, {}, {}
-    operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT"}
+    operations = {"click": "CLICK", "fill": "TYPE_TEXT", "select": "SELECT",
+                  "scroll_to": "SCROLL_TO", "set_value": "SET_VALUE", "upload": "UPLOAD_FILE"}
     for action in actions:
         kind = action["kind"]
         if kind not in operations:
@@ -58,7 +60,9 @@ def action_space(actions):
         if node not in indices:
             index = str(len(elements) + 1)
             indices[node] = index
-            element = {k: action[k] for k in ("role", "value", "checked", "selected", "expanded") if k in action}
+            element = {k: action[k] for k in
+                       ("role", "value", "checked", "selected", "expanded", "context", "input_type", "required")
+                       if k in action}
             element.update(index=index, label=action["label"].split(" → ")[0], operations=[])
             if kind == "select":
                 element["value"] = action.get("current_value", "")
@@ -79,80 +83,89 @@ def action_space(actions):
 
 
 def choose(state, goal, history):
+    """Rank executable operation/target pairs jointly, so independent heads cannot disagree."""
     elements, targets, controls = action_space(state["actions"])
-    labels = {
-        "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
-        "TYPE_TEXT": "Enter or replace text in an editable field. A small LLM will supply the value from the goal.",
-        "SELECT": "Select an observed dropdown value.",
-    }
-    operations = {key: labels[key] for key in targets}
-    operations.update({key: value["label"] for key, value in controls.items()})
-    operations.update(DONE="Every requirement is visibly satisfied.", BLOCKED="No supported operation can progress.")
-    questions = {
-        "operation": {"type": "choice", "criteria": operations, "instructions": {"goal": goal, "rules": NEXT_ACTION}}
-    }
+    actions, criteria = {}, {}
     for operation, candidates in targets.items():
-        questions[operation.lower() + "_target"] = {
-            "type": "choice",
-            "criteria": {
-                index: {
-                    "element": f"[{index}] {a['label']}",
-                    "current_value": a.get("current_value", a.get("value", "")),
-                    **{k: a[k] for k in ("role", "checked", "selected", "expanded") if k in a},
-                }
-                for index, a in candidates.items()
-            },
-            "instructions": {"goal": goal, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
-        }
+        for index, action in candidates.items():
+            actions[action["id"]] = (operation, index)
+            criteria[action["id"]] = {
+                "operation": operation, "target": f"[{index}] {action['label']}",
+                **{k: action[k] for k in ("role", "input_type", "value", "current_value", "context", "href",
+                                          "required", "checked", "selected", "expanded", "validation",
+                                          "min", "max", "step", "accept") if k in action},
+            }
+    for operation, action in controls.items():
+        actions[action["id"]] = (operation, None)
+        criteria[action["id"]] = action["label"]
+    # A failed value is not attempted again on the same unchanged page.
+    for rejected in state.get("rejected_actions", []):
+        criteria.pop(rejected, None)
+    for action in state["actions"]:
+        recent = [h for h in history[-4:] if h.get("action") == action["label"] and
+                  h.get("kind") == action["kind"] and h.get("url") == state["url"]]
+        if len(recent) >= 2 and action["kind"] not in {"wait", "scroll", "search"}:
+            criteria.pop(action["id"], None)
+    criteria.update(DONE="All requirements are supported by observed evidence; return the final answer.",
+                    BLOCKED="Relevant recovery failed; missing information/tools prevent completion.")
     body = {
         "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
         "state": {
-            "page": {k: state[k] for k in ("url", "title", "text")},
-            "elements": elements,
+            "goal": goal,
+            "page": {k: state[k] for k in ("url", "title", "text", "document_text", "ready_state", "focus",
+                                            "scroll", "unsupported_frames", "omitted_actions") if k in state},
+            "previous_evidence": state.get("memory", []),
+            "feedback": state.get("feedback", ""),
             "recent_actions": [
-                {k: h.get(k) for k in ("action", "kind", "text", "page_changed")} for h in history[-10:]
+                {k: h.get(k) for k in ("action", "kind", "text", "page_changed", "url")} for h in history[-12:]
             ],
         },
-        "questions": questions,
+        "questions": {"action": {"type": "choice", "criteria": criteria, "instructions": NEXT_ACTION}},
     }
     started = time.perf_counter()
     result = post_json("https://api.typesafe.ai/v1/systemone", os.environ["TYPESAFE_API_KEY"], body)
-    operation_answer = validate_choice(result["answers"].get("operation", {}), operations)
-    operation = operation_answer["choice"]
-    target = None
-    target_answer = None
-    probabilities = {}
-    if operation in targets:
-        # Unused target heads cannot cause an action. Validate the head selected by the operation.
-        target_answer = validate_choice(result["answers"].get(operation.lower() + "_target", {}), targets[operation])
-        target = target_answer["choice"]
-        choice = targets[operation][target]["id"]
-        probabilities = {a["id"]: target_answer["probabilities"][index] for index, a in targets[operation].items()}
-    else:
-        choice = controls[operation]["id"] if operation in controls else operation
-        probabilities[choice] = operation_answer["probabilities"][operation]
+    answer = validate_choice(result["answers"].get("action", {}), criteria)
+    selected = answer["choice"]
+    operation, target = actions.get(selected, (selected, None))
+    operation_probabilities = {}
+    target_probabilities = {}
+    for key, probability in answer["probabilities"].items():
+        op, ix = actions.get(key, (key, None))
+        operation_probabilities[op] = operation_probabilities.get(op, 0) + probability
+        if op == operation and ix is not None:
+            target_probabilities[ix] = probability
+    mass = sum(target_probabilities.values())
+    if mass:
+        target_probabilities = {k: v / mass for k, v in target_probabilities.items()}
     return {
-        "choice": choice,
-        "operation": operation,
-        "target": target,
-        "confidence": operation_answer["confidence"],
-        "probabilities": probabilities,
-        "operation_probabilities": operation_answer["probabilities"],
-        "target_probabilities": target_answer["probabilities"] if target_answer else {},
-        "target_confidence": target_answer["confidence"] if target_answer else None,
-        "raw_answers": result["answers"],
-        "model": result["model"],
-        "usage": result.get("usage", {}),
-        "latency_ms": round((time.perf_counter() - started) * 1000),
+        "choice": selected, "operation": operation, "target": target,
+        "confidence": answer["confidence"], "probabilities": answer["probabilities"],
+        "operation_probabilities": operation_probabilities, "target_probabilities": target_probabilities,
+        "target_confidence": None, "raw_answers": result["answers"], "model": result["model"],
+        "usage": result.get("usage", {}), "latency_ms": round((time.perf_counter() - started) * 1000),
         "request": body,
     }
+
+
+def parse_json_object(content):
+    """Accept one JSON object with optional Markdown fences, never arbitrary trailing prose/objects."""
+    if not isinstance(content, str):
+        raise ValueError("Expected JSON text")
+    content = re.sub(r"^```(?:json)?\s*", "", content.strip(), flags=re.I)
+    content = re.sub(r"\s*```$", "", content).strip()
+    value = json.loads(content)
+    if not isinstance(value, dict):
+        raise ValueError("Expected a JSON object")
+    return value
 
 
 def field_context(goal, action, page, history):
     return {
         "goal": goal,
-        "field": {k: action.get(k) for k in ("label", "role", "value")},
-        "page": {"title": page["title"], "text": page["text"][:6000]},
+        "field": {k: action.get(k) for k in ("label", "role", "value", "kind", "input_type", "context",
+                                            "required", "min", "max", "step", "pattern", "accept")},
+        "page": {"url": page["url"], "title": page["title"], "text": page["text"][:6000]},
+        "previous_evidence": page.get("memory", []),
         "recent_actions": [{k: h.get(k) for k in ("action", "text")} for h in history[-6:]],
     }
 
@@ -185,7 +198,7 @@ def field_text(context):
         },
     )
     try:
-        output = json.loads(result["choices"][0]["message"]["content"])
+        output = parse_json_object(result["choices"][0]["message"]["content"])
         value = output["text"]
         if set(output) != {"text"} or not isinstance(value, str) or not value.strip() or len(value) > 2000:
             raise ValueError()
