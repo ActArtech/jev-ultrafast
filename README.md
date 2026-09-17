@@ -48,7 +48,11 @@ recovery feedback instead of immediately ending the task. The action and decisio
 
 This is a state/action experiment. The Flights video and timings below describe the earlier implementation,
 not measurements of this branch. The original broad benchmark was 1/100, and runtime-only fixes were 0/100;
-these changes require fresh evaluation before any reliability claim.
+the fresh 20-task comparison scored **0/20 baseline versus 4/20 redesigned**, but manual evidence review
+found two false-positive judge passes. Only **2/20 candidate completions were supported**: Newegg product
+research in 28 seconds and a hidden-label form in 8.5 seconds. The candidate used $1.56 in agent/browser/proxy
+costs across all 20 attempts, excluding judging and one call with missing cost telemetry. Broad reliability
+remains poor. [Full results, costs, traces and audit](https://github.com/browser-use/new-eval-platform/blob/codex/jev-state-action-hillclimb/docs/jev-hillclimb-results.md).
 
 There are no site-specific action scripts or prepared field strings in the policy. The Flights example supplies a goal and independently verifies the outcome. The screenshot renderer adds labels afterward; it does not drive the browser.
 
@@ -113,7 +117,7 @@ Every executed target is resolved from an observed node. The executor rechecks p
 | [agent.py](jev_ultrafast/agent.py) | The complete loop and text-helper handoff |
 | [snapshot.js](jev_ultrafast/snapshot.js) | Atomic DOM snapshot, indexed controls, freshness guards |
 | [browser.py](jev_ultrafast/browser.py) | Browser connection, current geometry, execution |
-| [model.py](jev_ultrafast/model.py) | Dynamic operation/target heads and text generation |
+| [model.py](jev_ultrafast/model.py) | Joint action selection and text generation |
 | [questions.py](jev_ultrafast/questions.py) | Model instructions |
 | [demo.py](jev_ultrafast/demo.py) | Local inspector |
 
