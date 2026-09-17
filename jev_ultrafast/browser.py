@@ -2,11 +2,12 @@
 
 import hashlib
 import json
+import os
 import sys
 import time
 from pathlib import Path
 
-from browser_harness.admin import ensure_daemon
+from browser_harness.admin import daemon_browser_ready, ensure_daemon
 from browser_harness.helpers import cdp
 
 # Atomically read visible content and controls, preserving actual DOM node identity.
@@ -19,7 +20,11 @@ class StalePage(ValueError):
 
 class Browser:
     def __init__(self, url):
-        ensure_daemon()
+        if os.environ.get("BH_REQUIRE_EXISTING_DAEMON") == "1":
+            if not daemon_browser_ready():
+                raise RuntimeError("The required Browser Harness daemon is unavailable")
+        else:
+            ensure_daemon()
         self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
         self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
