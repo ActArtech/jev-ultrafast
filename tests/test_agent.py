@@ -387,3 +387,16 @@ def test_observation_waits_for_navigation_without_repeating_input(monkeypatch):
     assert operation.call_count == 9
     assert all(call.args[0]["operation"] == "observe" for call in operation.call_args_list)
     assert sum(call.args[0] for call in sleep.call_args_list) >= 1.5
+
+
+def test_remote_response_deadline_does_not_retry_mutations(monkeypatch):
+    from jev_ultrafast import browser
+
+    b = browser.Browser.__new__(browser.Browser)
+    b.session = "test"
+    cdp = Mock(side_effect=TimeoutError("unknown navigation result"))
+    monkeypatch.setattr(browser, "cdp", cdp)
+    with pytest.raises(TimeoutError):
+        b.call("Page.navigate", url="https://example.test")
+    cdp.assert_called_once_with("Page.navigate", session_id="test", _response_timeout=30,
+                                url="https://example.test")
