@@ -36,7 +36,7 @@ page + fields + prior evidence
 This keeps operation and target coupled. Each choice carries the field type, value, nearby text,
 constraints and control state. Supported operations include click, text, native select/date/range,
 scrolling to an offscreen control, page scrolling, Enter/Escape, back, reload, web search, and creating
-an authorized plain-text sample file for a file input. The text helper runs only when a value is needed.
+an authorized plain-text or PNG sample file for a file input. The text helper runs only when a value is needed.
 
 The state includes up to 16,000 characters of rendered document text, current viewport text, up to 240
 observed actions, twelve recent actions, and bounded evidence from previous pages. Model requests compact
@@ -46,13 +46,26 @@ same-origin frames are traversed. Recently repeated controls are temporarily omi
 become feedback. The first BLOCKED choice gets one fresh observation, and three unchanged actions produce
 recovery feedback instead of immediately ending the task. The action and decision budgets still apply.
 
-This is a state/action experiment. The Flights video and timings below describe the earlier implementation,
-not measurements of this branch. The original broad benchmark was 1/100, and runtime-only fixes were 0/100;
-the fresh 20-task comparison scored **0/20 baseline versus 4/20 redesigned**, but manual evidence review
-found two false-positive judge passes. Only **2/20 candidate completions were supported**: Newegg product
-research in 28 seconds and a hidden-label form in 8.5 seconds. The candidate used $1.56 in agent/browser/proxy
-costs across all 20 attempts, excluding judging and one call with missing cost telemetry. Broad reliability
-remains poor. [Full results, costs, traces and audit](https://github.com/browser-use/new-eval-platform/blob/codex/jev-state-action-hillclimb/docs/jev-hillclimb-results.md).
+This is an experimental planner branch. The Flights video and timings below describe the earlier implementation.
+The latest frozen 20-task comparison separates state fixes from checkpoint planning:
+
+| Metric | Previous Jev | State fixes | State + planner |
+| --- | ---: | ---: | ---: |
+| Raw judge passes / 20 | 3 | 4 | 3 |
+| Completions supported by artifact review / 20 | 1 | 1 | 3 |
+| Actual model judgments / 20 | 19 | 19 | 20 |
+| Known agent + browser + proxy cost, all attempts | $2.03 | $2.21 | $6.06 |
+| Calls with unknown cost | 0 | 1 | 2 |
+
+All claimed passes were audited by the same Codex agent that built the harness; failures were not independently
+rejudged. The planner completed an iframe form, a Material UI form and article research in 17–33 seconds.
+The prior BU 2.0 run scored 14/20 on these IDs, but was not rerun here. This small, previously seen split does
+not establish a reliable improvement. General reliability remains poor.
+[Full results, costs, paired comparisons and audit](https://github.com/browser-use/new-eval-platform/blob/codex/jev-planner-loop/docs/jev-planner-results.md).
+
+The original broad benchmark was 1/100; runtime-only fixes were 0/100. The preceding state/action iteration
+reached 4/20 raw passes and 2/20 supported completions on a different split.
+[Previous study](https://github.com/browser-use/new-eval-platform/blob/codex/jev-state-action-hillclimb/docs/jev-hillclimb-results.md).
 
 There are no site-specific action scripts or prepared field strings in the policy. The Flights example supplies a goal and independently verifies the outcome. The screenshot renderer adds labels afterward; it does not drive the browser.
 
@@ -68,15 +81,18 @@ with Agent(url, goal, planner_model="google/gemini-3.5-flash") as agent:
 
 The planner keeps an immutable requirements list, gives Jev one immediate objective, and reviews progress after
 eight actions, repeated failures, or Jev requesting completion. Its completion checks cite exact captured
-observations; invalid required fields prevent form completion. It makes at most 16 requests, including retries.
+observations; invalid required fields prevent form completion. A separate completion-audit call can reject an
+unsupported answer and send Jev back to work. It makes at most 16 requests, including retries and audits.
 The planner never executes actions or emits selectors. Mercury still supplies typed values. Without `planner_model`,
 the normal Jev loop remains available. `PLANNER_API_KEY` defaults to `TEXT_MODEL_API_KEY`; the endpoint defaults to
 OpenRouter. Enable it in the local inspector with `JEV_PLANNER_MODEL=google/gemini-3.5-flash uv run jev`, or add
 `--planner-model google/gemini-3.5-flash` to `examples/run.py`. The inspector shows the current objective and
-requirement checks. New planner reliability and cost have not yet been measured.
+requirement checks. The full planner study cost $30.92 in known charges across 74 agent attempts, 20 saved-state
+requests and fixture browsers. Three calls have unknown cost; runner bills are excluded. All 82 owned browsers stopped.
 
 Observation fixes also cover visible SVG text, labeled hidden native controls, rich-text editor labels and authorized
-PNG sample uploads. Fields remain visible in the state even when offscreen. Unrelated text changes no longer cancel
+PNG sample uploads, plus transparent native controls over visible widgets. Fields remain visible in the state even
+when offscreen. Text is ordered by rendered position before truncation, preserving visually sorted results. Unrelated text changes no longer cancel
 typing or a web-search navigation.
 
 ```bash
@@ -140,6 +156,7 @@ Every executed target is resolved from an observed node. The executor rechecks p
 | [browser.py](jev_ultrafast/browser.py) | Browser connection, current geometry, execution |
 | [model.py](jev_ultrafast/model.py) | Joint action selection and text generation |
 | [questions.py](jev_ultrafast/questions.py) | Model instructions |
+| [planner.py](jev_ultrafast/planner.py) | Optional objectives, retained evidence and completion audit |
 | [demo.py](jev_ultrafast/demo.py) | Local inspector |
 
 ## Evidence and limits

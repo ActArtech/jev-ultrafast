@@ -99,6 +99,8 @@ function render() {
     controls();
     return;
   }
+  $("viewport").style.aspectRatio = `${page.w} / ${page.h}`;
+  $("viewport").style.minHeight = "0";
   $("empty").hidden = true;
   $("screenshot").hidden = false;
   $("screenshot").src = `data:image/jpeg;base64,${page.screenshot}`;
