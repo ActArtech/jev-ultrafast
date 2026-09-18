@@ -2,6 +2,10 @@
 
 # Jev Ultrafast ⚡
 
+> [!IMPORTANT]
+> **The Browser Use Cloud waitlist is open.** Get early access to ultrafast browser agents in the cloud.
+> **[Join the waitlist →](https://browser-use.com/ultrafast?utm_source=github&utm_medium=readme&utm_campaign=jev-ultrafast)**
+
 **A browser agent with a dynamic, indexed action space.**
 
 Give it one goal. [TypeSafe's Jev](https://docs.typesafe.ai/introduction) picks an operation and an element. A small LLM writes text only when the operation is `TYPE_TEXT`.
