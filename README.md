@@ -58,6 +58,25 @@ There are no site-specific action scripts or prepared field strings in the polic
 
 ## Try it
 
+This branch adds an optional checkpoint planner:
+
+```python
+with Agent(url, goal, planner_model="google/gemini-3.5-flash") as agent:
+    for state in agent.run():
+        print(state.get("controller"), state["status"])
+```
+
+The planner keeps an immutable requirements list, gives Jev one immediate objective, and reviews progress after
+eight actions, repeated failures, or Jev requesting completion. Its completion checks cite exact captured
+observations; invalid required fields prevent form completion. It makes at most 16 requests, including retries.
+The planner never executes actions or emits selectors. Mercury still supplies typed values. Without `planner_model`,
+the normal Jev loop remains available. `PLANNER_API_KEY` defaults to `TEXT_MODEL_API_KEY`; the endpoint defaults to
+OpenRouter. New planner reliability and cost have not yet been measured.
+
+Observation fixes also cover visible SVG text, labeled hidden native controls, rich-text editor labels and authorized
+PNG sample uploads. Fields remain visible in the state even when offscreen. Unrelated text changes no longer cancel
+typing or a web-search navigation.
+
 ```bash
 git clone https://github.com/browser-use/jev-ultrafast.git
 cd jev-ultrafast

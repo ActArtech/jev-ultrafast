@@ -4,18 +4,21 @@ import base64
 import time
 from pathlib import Path
 
+from . import planner
 from .browser import Browser, InvalidValue, StalePage
 from .model import action_space, choose, field_context, field_text
 from .questions import MAX_STEPS
 
 
 class Agent:
-    def __init__(self, url, goals, *, record_dir=None, screenshots=False, max_steps=MAX_STEPS):
+    def __init__(self, url, goals, *, record_dir=None, screenshots=False, max_steps=MAX_STEPS, planner_model=None):
         task = goals.strip() if isinstance(goals, str) else "\n".join(goals).strip()
         if not task:
             raise ValueError("Supply a task")
         if type(max_steps) is not int or max_steps < 1:
             raise ValueError("max_steps must be a positive integer")
+        if planner_model is not None and (not isinstance(planner_model, str) or not planner_model.strip()):
+            raise ValueError("planner_model must be a model name or None")
         self.max_steps = max_steps
         plan = [task]
         self.pending_text = None
@@ -44,6 +47,15 @@ class Agent:
             elapsed_ms=0,
             started_at=None,
             record=bool(self.record_dir),
+            planner_model=planner_model,
+            controller=None,
+            planner_calls=[],
+            observations=[],
+            checkpoint_step=0,
+            checkpoint_errors=0,
+            stale_count=0,
+            no_progress=0,
+            final_answer="",
         )
         if self.record_dir:
             self.record_dir.mkdir(parents=True, exist_ok=True)
@@ -61,10 +73,13 @@ class Agent:
         if name == "tick":
             try:
                 self.command("predict", {})
+                if state["status"] in {"done", "blocked"}:
+                    return self.snapshot()
                 return self.command("act", {"fingerprint": state["page"]["fingerprint"]})
             except StalePage:
                 state["decision"] = None
                 state["status"] = "ready"
+                state["stale_count"] = state.get("stale_count", 0) + 1
                 state["page"] = state["browser"].observe(screenshot=self.screenshots)
                 state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
                 return self.snapshot()
@@ -80,6 +95,16 @@ class Agent:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= self.max_steps * 2:
                 raise ValueError("Reached the demo's model-call budget")
+            if state.get("planner_model"):
+                reason = self.checkpoint_reason()
+                if reason:
+                    self.checkpoint(reason)
+                    if state["status"] in {"done", "blocked"}:
+                        return self.snapshot()
+                controller = state["controller"]
+                state["page"]["objective"] = controller["objective"]
+                state["page"]["requirements"] = controller["requirements"]
+                state["page"]["checks"] = controller["checks"]
             state["page"]["memory"] = [p for p in state.get("memory", []) if p["url"] != state["page"]["url"]][-6:]
             state["decision"] = choose(state["page"], state["goal"], state["history"])
             state["decisions"].append(
@@ -101,6 +126,9 @@ class Agent:
                 if not state["browser"].fresh(page):
                     state["status"] = "ready"
                     raise StalePage("Page changed since the decision. Choose again.")
+                if state.get("planner_model"):
+                    self.checkpoint("Jev requests verification" if selected == "DONE" else "Jev requests recovery")
+                    return self.snapshot()
                 if selected == "BLOCKED" and not state.get("recoveries"):
                     # One fresh look handles hydration/temporary blank pages; no browser mutation is replayed.
                     state.setdefault("recoveries", []).append({"reason": "First BLOCKED re-observation"})
@@ -190,6 +218,11 @@ class Agent:
                 url=state["page"]["url"],
                 elapsed_ms=state["elapsed_ms"],
             )
+            state["stale_count"] = 0
+            state["no_progress"] = (state.get("no_progress", 0) + 1
+                                    if not state["history"][-1]["page_changed"] else 0)
+            if state.get("planner_model"):
+                planner.remember(state)
             if state["record"]:
                 (self.record_dir / f"{state['elapsed_ms']:06d}.jpg").write_bytes(
                     base64.b64decode(state["page"]["screenshot"])
@@ -203,6 +236,34 @@ class Agent:
         else:
             raise ValueError("Unknown command")
         return self.snapshot()
+
+    def checkpoint_reason(self):
+        state = self.state
+        if not state.get("controller"):
+            return "Initial plan"
+        if state.get("stale_count", 0) >= 3:
+            return "Three stale decisions without execution"
+        if len(state.get("text_errors", [])) - state.get("checkpoint_errors", 0) >= 2:
+            return "Repeated text or value failure"
+        if state.get("no_progress", 0) >= 3:
+            return "Three actions without observable progress"
+        if len(state["history"]) - state.get("checkpoint_step", 0) >= 8:
+            return "Review progress after eight actions"
+        return None
+
+    def checkpoint(self, reason):
+        state = self.state
+        # Refresh before verification; a terminal label never verifies its own evidence.
+        state["page"] = state["browser"].observe(screenshot=self.screenshots)
+        controller = planner.checkpoint(state, reason, state["planner_model"])
+        state["controller"] = controller
+        state["checkpoint_step"] = len(state["history"])
+        state["checkpoint_errors"] = len(state.get("text_errors", []))
+        state["stale_count"] = state["no_progress"] = 0
+        state["final_answer"] = controller["answer"]
+        state["decision"] = None
+        state["status"] = "done" if controller["complete"] else "blocked" if controller["blocked"] else "ready"
+        state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
 
     def run(self):
         while self.state["status"] not in {"done", "blocked"}:

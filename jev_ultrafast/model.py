@@ -108,10 +108,19 @@ def choose(state, goal, history):
             criteria.pop(action["id"], None)
     criteria.update(DONE="All requirements are supported by observed evidence; return the final answer.",
                     BLOCKED="Relevant recovery failed; missing information/tools prevent completion.")
+    instructions = NEXT_ACTION
+    if state.get("objective"):
+        criteria['DONE'] = 'Current objective reached: ask the planner to verify and choose the next subgoal.'
+        criteria['BLOCKED'] = 'Current objective cannot advance: ask the planner for recovery.'
+        instructions += ('\nA planner supplied current_objective. Work on that immediate objective, preserving the '
+                         'original task constraints. Choose DONE as soon as its stopping condition is observed; '
+                         'the planner verifies progress. Do not restart completed work or attempt other subgoals.')
     body = {
         "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),
         "state": {
             "goal": goal,
+            "current_objective": state.get("objective"),
+            "requirements": state.get("requirements", []),
             "page": {k: state[k] for k in ("url", "title", "text", "document_text", "ready_state", "focus",
                                             "scroll", "unsupported_frames", "omitted_actions", "fields") if k in state},
             "previous_evidence": state.get("memory", []),
@@ -120,7 +129,7 @@ def choose(state, goal, history):
                 {k: h.get(k) for k in ("action", "kind", "text", "page_changed", "url")} for h in history[-12:]
             ],
         },
-        "questions": {"action": {"type": "choice", "criteria": criteria, "instructions": NEXT_ACTION}},
+        "questions": {"action": {"type": "choice", "criteria": criteria, "instructions": instructions}},
     }
     compact_request(body)
     started = time.perf_counter()
@@ -217,6 +226,7 @@ def parse_json_object(content):
 def field_context(goal, action, page, history):
     return {
         "goal": goal,
+        "current_objective": page.get("objective"),
         "field": {k: action.get(k) for k in ("label", "role", "value", "kind", "input_type", "context",
                                             "required", "min", "max", "step", "pattern", "accept")},
         "page": {"url": page["url"], "title": page["title"], "text": page["text"][:6000]},
