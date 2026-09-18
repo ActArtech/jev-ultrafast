@@ -16,6 +16,10 @@ HTML = '''<!doctype html><title>State/action checks</title>
 <div><label>Email editor</label><div><div id="rich" contenteditable="true" style="min-height:35px"></div></div></div>
 <svg width="300" height="30"><text x="0" y="20">1995 2017 37% 24%</text></svg>
 <a id="styled" href="#ok"><style>.noise{color:red}</style>Clean label</a>
+<div><label>Overlay document</label><div style="position:relative;width:180px;height:36px">
+<input id="overlay" type="file" required
+ style="position:absolute;inset:0;width:100%;height:100%;opacity:0"><span>Choose file</span></div></div>
+<input id="noninteractive" type="file" style="opacity:0;pointer-events:none">
 <div id="shadow"></div><iframe id="frame"></iframe>
 <button id="offscreen" style="position:absolute;top:2400px" onclick="window.clicked=true">Far away</button>'''
 
@@ -45,11 +49,16 @@ def main():
         passed.append('CSS omitted from labels')
         assert '1995 2017 37% 24%' in page['document_text']
         passed.append('rendered SVG text is observed')
+        assert any(a['label']=='Overlay document' and a['kind']=='upload' for a in page['actions'])
+        hidden_id=b.evaluate("window.__jevFast.ids.get(document.querySelector('#noninteractive'))")
+        assert not any(a.get('node')==hidden_id for a in page['actions'])
+        passed.append('transparent native overlay is actionable; pointer-disabled hidden input is omitted')
         for label, value, assertion in [
             ('Date', '2026-09-20', "document.querySelector('#date').value==='2026-09-20'"),
             ('Volume', '9', "document.querySelector('#range').value==='9'"),
             ('Document', 'An authorized sample document.', "document.querySelector('#file').files[0].size===30"),
             ('Hidden Document', 'sample', "document.querySelector('#hidden-file').files[0].size===6"),
+            ('Overlay document', 'sample', "document.querySelector('#overlay').files[0].size===6"),
             ('Photo', 'A sample image', "document.querySelector('#photo').files[0].type==='image/png'"),
             ('Email editor', 'person@example.com', "document.querySelector('#rich').innerText==='person@example.com'"),
             ('Shadow value', 'shadow entry',
@@ -84,6 +93,14 @@ def main():
         b.act(a,page,text='fresh@example.com')
         assert b.evaluate("document.querySelector('#email').value")=='fresh@example.com'
         passed.append('unrelated text changes do not cancel generated field values')
+        b.evaluate("""document.body.insertAdjacentHTML('beforeend',
+          '<div id=visual-order style=position:absolute;top:100px></div>');
+          document.querySelector('#visual-order').innerHTML=Array.from({length:250},(_,i)=>
+          '<div style=position:absolute;top:'+(250-i)*20+'px>Row '+i+' '+('text '.repeat(30))+'</div>').join('')""")
+        page=b.observe(screenshot=False)
+        assert page['document_text'].find('Row 249 ') < page['document_text'].find('Row 248 ')
+        assert 'Row 249 ' in page['text']
+        passed.append('CSS visual order survives long-document truncation')
         print('PASS:', len(passed), 'state/action checks;', '; '.join(passed))
     finally:
         b.close()
