@@ -151,3 +151,14 @@ def test_audit_cannot_exceed_shared_planner_budget(monkeypatch):
     with pytest.raises(ValueError, match="before completion audit"):
         planner.checkpoint({"planner_calls": [{}] * 16}, "completion", "test")
     post.assert_not_called()
+
+
+def test_observed_title_is_valid_provenance_but_not_form_submission_evidence():
+    p, r = payload(), result()
+    p["observations"][0]["title"] = "All Sites - Stack Exchange"
+    r.update(mode="research", complete=False, objective="Sort the listed sites")
+    r["checks"][0]["evidence"][0]["quote"] = "All Sites - Stack Exchange"
+    assert planner.validate(r, p)["checks"][0]["met"]
+    r.update(mode="form", complete=True)
+    with pytest.raises(ValueError, match="current page text"):
+        planner.validate(r, p)

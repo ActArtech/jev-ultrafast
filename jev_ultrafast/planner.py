@@ -119,7 +119,8 @@ def validate(output, payload):
             quote = proof['quote']
             if not observation or not isinstance(quote, str) or len(quote.strip()) < 3:
                 raise ValueError('Unknown or empty evidence')
-            source = observation['text'] + '\n' + json.dumps(observation['fields'], ensure_ascii=False)
+            source = '\n'.join([observation.get('title', ''), observation.get('url', ''), observation['text'],
+                                 json.dumps(observation['fields'], ensure_ascii=False)])
             if ' '.join(quote.split()) not in ' '.join(source.split()):
                 raise ValueError('Evidence quote was not observed')
     if output['complete']:
