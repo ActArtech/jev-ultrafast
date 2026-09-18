@@ -125,3 +125,29 @@ def test_checkpoint_interval_and_stale_recovery_are_explicit():
     assert agent.checkpoint_reason() == 'Three stale decisions without execution'
     agent.state.update(stale_count=0, no_progress=3)
     assert agent.checkpoint_reason() == 'Three actions without observable progress'
+
+
+def test_independent_audit_sends_unsupported_answer_back_to_work(monkeypatch):
+    import json
+    state = {"planner_calls": []}
+    monkeypatch.setattr(planner, "plan", lambda *_: result())
+    monkeypatch.setattr(planner, "context", lambda *_: payload())
+    monkeypatch.setenv("TEXT_MODEL_API_KEY", "test")
+    verdict = {"supported": False, "unmet": [0], "reason": "Source has no second date",
+               "objective": "Find the dated chart before calculating the year difference"}
+    monkeypatch.setattr(planner.model, "post_json", lambda *_: {
+        "choices": [{"message": {"content": json.dumps(verdict)}}]})
+    output = planner.checkpoint(state, "completion", "test")
+    assert output["complete"] is False and output["answer"] == ""
+    assert output["checks"][0]["met"] is False
+    assert output["objective"] == verdict["objective"]
+    assert len(state["planner_calls"]) == 1
+
+
+def test_audit_cannot_exceed_shared_planner_budget(monkeypatch):
+    monkeypatch.setattr(planner, "plan", lambda *_: result())
+    post = Mock()
+    monkeypatch.setattr(planner.model, "post_json", post)
+    with pytest.raises(ValueError, match="before completion audit"):
+        planner.checkpoint({"planner_calls": [{}] * 16}, "completion", "test")
+    post.assert_not_called()
