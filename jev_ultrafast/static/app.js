@@ -69,7 +69,15 @@ async function perform(fn, label) {
 function render() {
   if (!state) return;
   $("helper").textContent = `Text helper · ${state.text_model}`;
-  $("plan").innerHTML = (state.plan || [])
+  const controller = state.controller;
+  $("objective").hidden = !controller;
+  $("objective").textContent = controller?.complete
+    ? controller.answer
+    : controller?.objective || "";
+  $("plan").innerHTML = controller ? controller.requirements.map((requirement, i) => {
+    const check = controller.checks.find(c => c.id === i);
+    return `<div class="plan-step"><span>${check?.met ? "✓" : "○"}</span>${escape(requirement)}</div>`;
+  }).join("") : (state.plan || [])
     .map(
       (goal, i) =>
         `<div class="plan-step ${i === state.plan_index ? "current" : ""}"><span>${i < state.plan_index ? "✓" : i + 1}</span>${escape(goal)}</div>`,
@@ -83,7 +91,7 @@ function render() {
     idle: "Ready to explore",
     ready: "Page observed · ready for a decision",
     predicted: "Choice ready · inspect or execute",
-    done: "Jev reports complete · inspect the page",
+    done: controller?.complete ? "Planner reports complete · evidence retained" : "Jev reports complete · inspect the page",
     blocked: "Stopped · no supported next action",
   };
   $("status").textContent = labels[state.status] || state.status;
@@ -174,6 +182,7 @@ $("auto").addEventListener("click", () =>
       $("status").textContent = "Running…";
       if ($("pace").checked) {
         await call("predict");
+        if (["done", "blocked"].includes(state.status)) break;
         await new Promise(resolve => setTimeout(resolve, 450));
         if (!automatic) break;
         await call("act", {fingerprint: state.page.fingerprint});

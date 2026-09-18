@@ -31,7 +31,8 @@ def load_environment():
 
 def response_state():
     state = AGENT.snapshot() if AGENT else {"page": None, "status": "idle", "history": [], "decision": None}
-    return {**state, "text_model": os.environ.get("TEXT_MODEL", "deepseek-chat"), "max_steps": MAX_STEPS}
+    return {**state, "text_model": os.environ.get("TEXT_MODEL", "deepseek-chat"), "max_steps": MAX_STEPS,
+            "planner_model": os.environ.get("JEV_PLANNER_MODEL") or None}
 
 
 def close_browser():
@@ -57,6 +58,7 @@ def command(name, body):
             else f"{ORIGIN}/fixture.html?scenario={scenario}",
             goal,
             screenshots=True,
+            planner_model=os.environ.get("JEV_PLANNER_MODEL") or None,
             record_dir=Path.cwd() / "artifacts" / "frames" if body.get("record") else None,
         )
         AGENT.state["scenario"] = scenario

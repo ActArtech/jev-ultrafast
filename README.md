@@ -71,7 +71,9 @@ eight actions, repeated failures, or Jev requesting completion. Its completion c
 observations; invalid required fields prevent form completion. It makes at most 16 requests, including retries.
 The planner never executes actions or emits selectors. Mercury still supplies typed values. Without `planner_model`,
 the normal Jev loop remains available. `PLANNER_API_KEY` defaults to `TEXT_MODEL_API_KEY`; the endpoint defaults to
-OpenRouter. New planner reliability and cost have not yet been measured.
+OpenRouter. Enable it in the local inspector with `JEV_PLANNER_MODEL=google/gemini-3.5-flash uv run jev`, or add
+`--planner-model google/gemini-3.5-flash` to `examples/run.py`. The inspector shows the current objective and
+requirement checks. New planner reliability and cost have not yet been measured.
 
 Observation fixes also cover visible SVG text, labeled hidden native controls, rich-text editor labels and authorized
 PNG sample uploads. Fields remain visible in the state even when offscreen. Unrelated text changes no longer cancel
@@ -148,7 +150,7 @@ In six alternating runs with identical models and settings, both versions passed
 
 The same policy opened the requested Wikipedia article in **2.798 s** and passed a local hotel search/filter task in **1.896 s**. Runs, failures, source hashes, and measurement boundaries are in [performance.md](docs/performance.md).
 
-A `DONE` choice still requires independent outcome verification. The DOM reader handles common HTML and ARIA controls, not the full accessible-name specification. Cross-origin frames, closed shadow roots, canvas vision, existing-file uploads, pop-up tabs, and arbitrary keyboard widgets remain outside this experiment. Sample uploads currently support plain text only. Owned tabs share the existing Chrome profile.
+A `DONE` choice still requires independent outcome verification. The DOM reader handles common HTML and ARIA controls, not the full accessible-name specification. Cross-origin frames, closed shadow roots, canvas vision, existing-file uploads, pop-up tabs, and arbitrary keyboard widgets remain outside this experiment. Sample uploads support plain text and PNG images. Owned tabs share the existing Chrome profile.
 
 ## Development
 
