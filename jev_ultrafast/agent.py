@@ -124,7 +124,7 @@ class Agent:
                 raise ValueError(f"Stopped at the {self.max_steps}-action budget")
             text, helper = None, None
             if action["kind"] in {"fill", "set_value", "upload", "search"}:
-                if not state["browser"].fresh(page):
+                if not state["browser"].fresh(page, action):
                     raise StalePage("Page changed before text generation. Choose again.")
                 context = field_context(state["goal"], action, page, state["history"])
                 if self.pending_text and self.pending_text[0] == context:

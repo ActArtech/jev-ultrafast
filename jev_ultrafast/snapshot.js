@@ -36,8 +36,15 @@
     }
   }
   const all = selector => roots.flatMap(root=>[...root.querySelectorAll(selector)]);
+  // Hidden native controls can have an explicit visible label that is their interaction surface.
+  cache.surface=e=>{
+    if (visible(e) && e.getBoundingClientRect().width>0 && e.getBoundingClientRect().height>0) return e;
+    if (!['file','radio','checkbox'].includes(e.type)) return null;
+    return [...(e.labels||[])].find(l=>visible(l) && l.getBoundingClientRect().width>0) || null;
+  };
   cache.geometry=e=>{
-    if (!e?.isConnected || !visible(e)) return null;
+    if (!e?.isConnected) return null;
+    e=cache.surface(e); if (!e) return null;
     const r=e.getBoundingClientRect(); let x=r.x+r.width/2,y=r.y+r.height/2;
     let doc=e.ownerDocument, target=e, within=true, offscreen=false;
     const hit = (root,px,py,t) => {
@@ -88,23 +95,34 @@
     const scope=e.closest('label,fieldset,tr,[role="group"],li')||e.parentElement;
     return scope && !['BODY','HTML'].includes(scope.tagName) ? clean(scope.innerText,360) : '';
   };
+  const fieldLabel=e=>{
+    if (!e.isContentEditable) return name(e);
+    if (e.hasAttribute('aria-label') || e.hasAttribute('aria-labelledby')) return name(e);
+    for (let scope=e.parentElement,depth=0;scope && depth<3;scope=scope.parentElement,depth++) {
+      if (['BODY','HTML','FORM'].includes(scope.tagName)) break;
+      const label=[...scope.children].find(n=>n.tagName==='LABEL' && !n.contains(e));
+      if (label) return name(label);
+    }
+    return e.getAttribute('data-placeholder') || e.getAttribute('aria-placeholder') || 'Rich text editor';
+  };
+  cache.documentKey=()=>[performance.timeOrigin,location.href];
   cache.pageKey=()=>[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
     all('input,textarea,select').filter(safe).map(e=>[identity(e),e.value,e.checked,e.selectedIndex,e.disabled,e.readOnly])];
   cache.guard=e=>{
     if (!cache.geometry(e)) return null;
     const scope=e.closest('form,dialog,[role="dialog"],article,li,tr,[role="row"]') || e.parentElement;
-    return [identity(e),role(e),name(e),e.value??null,e.checked??null,e.selectedIndex??null,
+    return [identity(e),role(e),fieldLabel(e),e.isContentEditable?e.innerText:e.value??null,e.checked??null,e.selectedIndex??null,
       e.readOnly??null,e.matches(':disabled'),e.getAttribute('aria-disabled'),
       e.getAttribute('aria-expanded'),e.getAttribute('aria-checked'),e.getAttribute('aria-selected'),
       e.getAttribute('href'),scope?.innerText?.slice(0,6000)||''];
   };
-  const actions=[], offscreen=[];
+  const actions=[], offscreen=[], fields=[];
   for (const e of all(selector)) {
-    if (!safe(e) || !visible(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"]')) continue;
+    if (!safe(e) || !cache.surface(e) || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]')) continue;
     const g=cache.geometry(e), rname=role(e);
     if (!rname || !g || g.w<=0 || g.h<=0) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    const base={node:identity(e),role:rname,label:name(e)||rname,context:context(e),
+    const base={node:identity(e),role:rname,label:fieldLabel(e)||rname,context:context(e),
       rect:{x:g.x-g.w/2,y:g.y-g.h/2,w:g.w,h:g.h},
       input_type:e.type||null,required:!!e.required,placeholder:e.getAttribute('placeholder')||'',
       value:e.type==='file' ? [...e.files].map(f=>f.name).join(', ') :
@@ -116,6 +134,10 @@
     if (e.validity && !e.validity.valid) base.validation=e.validationMessage;
     for (const k of ['min','max','step','pattern','accept']) if (e.getAttribute(k)) base[k]=e.getAttribute(k);
     if (['checkbox','radio'].includes(e.type)) base.checked=String(e.checked);
+    if (e.matches('input,textarea,select') || e.isContentEditable) {
+      fields.push({...base,value:e.tagName==='SELECT'?[...e.selectedOptions].map(o=>o.label).join(', '):base.value,
+        valid:e.validity ? e.validity.valid : null,offscreen:g.offscreen});
+    }
     if (!g.within) {
       // Offscreen is different from covered: scrolling cannot dismiss a modal.
       if (g.offscreen)
@@ -146,7 +168,7 @@
     const range=doc.createRange(); let node;
     while ((node=walker.nextNode()) && fullLength<16000) {
       const value=node.textContent.trim(), parent=node.parentElement;
-      if (!value || !parent || parent.closest('script,style,noscript,template,svg') || !visible(parent)) continue;
+      if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
       range.selectNodeContents(node); const r=range.getBoundingClientRect();
       if (r.width<=0 || r.height<=0) continue;
       full.push(value);fullLength+=value.length;
@@ -173,7 +195,7 @@
   actions.push({id:'search_web',kind:'search',label:'Search the web using Bing; a text helper writes the query'});
   actions.push({id:'wait',kind:'wait',label:'Wait briefly for loading or new controls'});
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
-    document_text:full.join('\n').slice(0,16000),ready_state:document.readyState,
+    document_text:full.join('\n').slice(0,16000),ready_state:document.readyState,fields,
     unsupported_frames:missing,frame_count:frames.length,focus:focus ? {node:identity(focus),role:role(focus),label:name(focus)} : null,
-    scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};
+    scroll:{y:scrollY,height},actions,marker,page_key,document_key:cache.documentKey(),guards,omitted_actions};
 })()

@@ -113,7 +113,7 @@ def choose(state, goal, history):
         "state": {
             "goal": goal,
             "page": {k: state[k] for k in ("url", "title", "text", "document_text", "ready_state", "focus",
-                                            "scroll", "unsupported_frames", "omitted_actions") if k in state},
+                                            "scroll", "unsupported_frames", "omitted_actions", "fields") if k in state},
             "previous_evidence": state.get("memory", []),
             "feedback": state.get("feedback", ""),
             "recent_actions": [
@@ -152,6 +152,9 @@ def compact_request(body, max_chars=28000):
     """Bound redundant context and choice metadata; report every omitted observed action."""
     state = body["state"]
     page = state["page"]
+    if "fields" in page:
+        page["fields"] = [{k: f[k] for k in ("node", "label", "value", "required", "valid", "validation", "input_type")
+                           if k in f} for f in page["fields"][:60]]
     for key, limit in (("text", 3500), ("document_text", 7000)):
         if key in page:
             page[key] = page[key][:limit]
@@ -175,6 +178,7 @@ def compact_request(body, max_chars=28000):
         return len(json.dumps(body, ensure_ascii=False, separators=(",", ":")))
 
     if size() > max_chars:
+        page["fields"] = page.get("fields", [])[:20]
         state["previous_evidence"] = state["previous_evidence"][-1:]
         page["document_text"] = page.get("document_text", "")[:3500]
         for value in criteria.values():

@@ -11,6 +11,10 @@ HTML = '''<!doctype html><title>State/action checks</title>
 <label>Date <input id="date" type="date" required></label>
 <label>Volume <input id="range" type="range" min="1" max="9" value="1"></label>
 <label>Document <input id="file" type="file" accept=".txt"></label>
+<label for="hidden-file">Hidden Document</label><input id="hidden-file" type="file" style="display:none">
+<label>Photo <input id="photo" type="file" accept="image/*"></label>
+<div><label>Email editor</label><div><div id="rich" contenteditable="true" style="min-height:35px"></div></div></div>
+<svg width="300" height="30"><text x="0" y="20">1995 2017 37% 24%</text></svg>
 <a id="styled" href="#ok"><style>.noise{color:red}</style>Clean label</a>
 <div id="shadow"></div><iframe id="frame"></iframe>
 <button id="offscreen" style="position:absolute;top:2400px" onclick="window.clicked=true">Far away</button>'''
@@ -39,10 +43,15 @@ def main():
         assert any(a['label'] == 'Clean label' for a in page['actions'])
         assert 'color:red' not in json.dumps(page['actions'])
         passed.append('CSS omitted from labels')
+        assert '1995 2017 37% 24%' in page['document_text']
+        passed.append('rendered SVG text is observed')
         for label, value, assertion in [
             ('Date', '2026-09-20', "document.querySelector('#date').value==='2026-09-20'"),
             ('Volume', '9', "document.querySelector('#range').value==='9'"),
             ('Document', 'An authorized sample document.', "document.querySelector('#file').files[0].size===30"),
+            ('Hidden Document', 'sample', "document.querySelector('#hidden-file').files[0].size===6"),
+            ('Photo', 'A sample image', "document.querySelector('#photo').files[0].type==='image/png'"),
+            ('Email editor', 'person@example.com', "document.querySelector('#rich').innerText==='person@example.com'"),
             ('Shadow value', 'shadow entry',
              "document.querySelector('#shadow').shadowRoot.querySelector('input').value==='shadow entry'"),
             ('Frame value', 'frame entry',
@@ -67,6 +76,14 @@ def main():
         b.act(a, page)
         assert b.evaluate('window.clicked')
         passed.append('offscreen control scrolls into view before clicking')
+        b.evaluate("scrollTo(0,0)")
+        page=b.observe(screenshot=False)
+        a=next(a for a in page['actions'] if a['label']=='Email' and a['kind']=='fill')
+        b.evaluate("document.querySelector('#offscreen').textContent='Unrelated changing ticker'")
+        assert b.fresh(page,a)
+        b.act(a,page,text='fresh@example.com')
+        assert b.evaluate("document.querySelector('#email').value")=='fresh@example.com'
+        passed.append('unrelated text changes do not cancel generated field values')
         print('PASS:', len(passed), 'state/action checks;', '; '.join(passed))
     finally:
         b.close()

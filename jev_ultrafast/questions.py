@@ -25,7 +25,8 @@ The goal's final-answer format is NOT a field value: "answer with an integer" do
 into Search. Research an unknown person using the given clues; never invent a person's name for the query.
 For SET_VALUE use HTML's native format: date YYYY-MM-DD, time HH:MM, month YYYY-MM, week YYYY-Www,
 datetime-local YYYY-MM-DDTHH:MM, range a numeric string within min/max (defaults 0/100).
-For UPLOAD_FILE, text is the content of a new plain-text sample file, only if creating a sample is authorized.
+For UPLOAD_FILE, text is sample file content, only if creating a sample is authorized. For image/png or image/*
+inputs, write a short sample-image description; the executor creates a real PNG. Never supply an existing filename.
 If explicitly asked to complete a demo/test/challenge form without provided details, use consistent fictional
 sample values, e.g. an example.com email. Otherwise never invent personal information or unavailable file content.
 Respect email/number/phone/URL field types. Return {"text": null} if a necessary real value is unavailable.

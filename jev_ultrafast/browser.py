@@ -106,7 +106,9 @@ class Browser:
         raise StalePage("Page did not settle")
 
     def fresh(self, page, action=None):
-        if action is not None and action["kind"] in {"click", "select", "open_link"}:
+        if action is not None and action["kind"] == "search":
+            return self.evaluate("window.__jevFast?.documentKey()") == page["document_key"]
+        if action is not None and action.get("node") is not None:
             node = action["node"]
             if type(node) is not int:
                 return False
@@ -183,8 +185,9 @@ def browser_operation(request):
                      windowsVirtualKeyCode=code, nativeVirtualKeyCode=code)
         elif kind == "scroll_to":
             result = evaluate("""(node => {
-              const e=window.__jevFast?.nodes.get(node);
-              if (!e?.isConnected) return false;
+              const original=window.__jevFast?.nodes.get(node);
+              const e=original?.isConnected && window.__jevFast.surface(original);
+              if (!e) return false;
               e.scrollIntoView({block:'center',inline:'center',behavior:'instant'});
               let doc=e.ownerDocument;
               while (doc!==document) {
@@ -209,7 +212,7 @@ def browser_operation(request):
             target = evaluate("""(action => {
               const e=window.__jevFast?.nodes.get(action.node);
               if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
-                  !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
+                  !window.__jevFast.surface(e)) return null;
               if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
               const g=window.__jevFast.geometry(e);
               if (!g?.within) return null;
@@ -238,10 +241,15 @@ def browser_operation(request):
               if (action.kind==='upload') {
                 if (e.type!=='file' || typeof action.text!=='string' || !action.text.trim()) return {invalid:true};
                 const accepts=e.accept.toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
-                if (accepts.length && !accepts.some(s=>['.txt','text/plain','text/*','*/*'].includes(s)))
-                  return {invalid:true};
                 const win=e.ownerDocument.defaultView, transfer=new win.DataTransfer();
-                transfer.items.add(new win.File([action.text],'sample.txt',{type:'text/plain'}));
+                if (!accepts.length || accepts.some(s=>['.txt','text/plain','text/*','*/*'].includes(s))) {
+                  transfer.items.add(new win.File([action.text],'sample.txt',{type:'text/plain'}));
+                } else if (accepts.some(s=>['.png','image/png','image/*'].includes(s))) {
+                  const canvas=e.ownerDocument.createElement('canvas');canvas.width=32;canvas.height=32;
+                  const ctx=canvas.getContext('2d');ctx.fillStyle='#527c9a';ctx.fillRect(0,0,32,32);
+                  const bytes=Uint8Array.from(atob(canvas.toDataURL('image/png').split(',')[1]),c=>c.charCodeAt(0));
+                  transfer.items.add(new win.File([bytes],'sample.png',{type:'image/png'}));
+                } else return {invalid:true};
                 e.files=transfer.files;
                 e.dispatchEvent(new win.Event('input',{bubbles:true}));
                 e.dispatchEvent(new win.Event('change',{bubbles:true}));
