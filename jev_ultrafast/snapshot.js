@@ -40,7 +40,15 @@
   cache.surface=e=>{
     if (visible(e) && e.getBoundingClientRect().width>0 && e.getBoundingClientRect().height>0) return e;
     if (!['file','radio','checkbox'].includes(e.type)) return null;
-    return [...(e.labels||[])].find(l=>visible(l) && l.getBoundingClientRect().width>0) || null;
+    const label=[...(e.labels||[])].find(l=>visible(l) && l.getBoundingClientRect().width>0);
+    if (label) return label;
+    // Custom upload/radio widgets often put an opacity-zero native input over a visible surface.
+    // It must retain real geometry and pointer input; geometry() still checks the exact hit target.
+    const r=e.getBoundingClientRect();
+    if (r.width>0 && r.height>0 && visible(e.parentElement) &&
+        e.checkVisibility({checkOpacity:false,checkVisibilityCSS:true}) &&
+        getComputedStyle(e).pointerEvents!=='none') return e;
+    return null;
   };
   cache.geometry=e=>{
     if (!e?.isConnected) return null;
@@ -96,14 +104,14 @@
     return scope && !['BODY','HTML'].includes(scope.tagName) ? clean(scope.innerText,360) : '';
   };
   const fieldLabel=e=>{
-    if (!e.isContentEditable) return name(e);
-    if (e.hasAttribute('aria-label') || e.hasAttribute('aria-labelledby')) return name(e);
+    if (!e.isContentEditable && !e.matches('input,textarea,select')) return name(e);
+    if (e.hasAttribute('aria-label') || e.hasAttribute('aria-labelledby') || e.labels?.length) return name(e);
     for (let scope=e.parentElement,depth=0;scope && depth<3;scope=scope.parentElement,depth++) {
       if (['BODY','HTML','FORM'].includes(scope.tagName)) break;
       const label=[...scope.children].find(n=>n.tagName==='LABEL' && !n.contains(e));
       if (label) return name(label);
     }
-    return e.getAttribute('data-placeholder') || e.getAttribute('aria-placeholder') || 'Rich text editor';
+    return e.isContentEditable ? e.getAttribute('data-placeholder') || e.getAttribute('aria-placeholder') || 'Rich text editor' : name(e);
   };
   cache.documentKey=()=>[performance.timeOrigin,location.href];
   cache.pageKey=()=>[performance.timeOrigin,location.href,scrollX,scrollY,innerWidth,innerHeight,
@@ -160,21 +168,29 @@
       if (editable && rname==='combobox') actions.push({...base,kind:'click',label:'Open '+base.label});
     }
   }
-  const words=[], full=[]; let focus=document.activeElement, length=0,fullLength=0;
+  const fragments=[]; let focus=document.activeElement, visited=0;
   if (!focus || ['BODY','HTML'].includes(focus.tagName)) focus=null;
   while (focus?.shadowRoot?.activeElement) focus=focus.shadowRoot.activeElement;
   for (const root of roots) {
     const doc=root.ownerDocument||root, walker=doc.createTreeWalker(root.body||root,NodeFilter.SHOW_TEXT);
     const range=doc.createRange(); let node;
-    while ((node=walker.nextNode()) && fullLength<16000) {
+    while (visited<12000 && (node=walker.nextNode())) {
+      visited++;
       const value=node.textContent.trim(), parent=node.parentElement;
       if (!value || !parent || parent.closest('script,style,noscript,template') || !visible(parent)) continue;
       range.selectNodeContents(node); const r=range.getBoundingClientRect();
       if (r.width<=0 || r.height<=0) continue;
-      full.push(value);fullLength+=value.length;
-      if (length<6000 && r.bottom>0 && r.top<doc.defaultView?.innerHeight) {words.push(value);length+=value.length;}
+      let x=r.x,y=r.y,owner=doc;
+      while (owner!==document && owner.defaultView?.frameElement) {
+        const frame=owner.defaultView.frameElement, fr=frame.getBoundingClientRect();
+        x+=fr.x+frame.clientLeft; y+=fr.y+frame.clientTop; owner=frame.ownerDocument;
+      }
+      fragments.push({text:value,x,y,inView:y+r.height>0 && y<innerHeight});
     }
   }
+  // CSS ordering can differ from DOM order. Sort rendered text before applying context limits.
+  fragments.sort((a,b)=>Math.round(a.y/3)-Math.round(b.y/3) || a.x-b.x);
+  const full=fragments.map(f=>f.text), words=fragments.filter(f=>f.inView).map(f=>f.text);
   const text=words.join('\n').slice(0,6000), height=document.documentElement.scrollHeight;
   const page_key=cache.pageKey(), guards={};
   const omitted_actions=Math.max(0,actions.length+offscreen.length-240);
