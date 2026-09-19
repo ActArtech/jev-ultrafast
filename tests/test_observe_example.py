@@ -33,7 +33,9 @@ def test_cards_need_a_visible_price_and_some_product_text():
 
 
 def test_every_observation_stays_a_pending_candidate():
-    record = observation(priced_card()[0], "2026-01-02T03:04:05+00:00", "done")
+    card = priced_card()[0]
+    card["observed_at"] = "2026-01-02T03:04:05+00:00"
+    record = observation(card, "done")
     assert record["source_url"] == "https://catalog.example.com/a"
     assert record["match_confidence"] == "candidate"
     assert record["review_status"] == "pending"
@@ -43,6 +45,18 @@ def test_every_observation_stays_a_pending_candidate():
 
 def test_a_read_only_run_on_an_approved_host_passes():
     assert verify(finished_state(), priced_card(), ALLOWED)["passed"]
+
+
+def test_a_blocked_run_with_priced_cards_still_passes():
+    state = finished_state()
+    state["status"] = "blocked"
+    assert verify(state, priced_card(), ALLOWED)["passed"]
+
+
+def test_commerce_and_contact_label_variants_fail_the_run():
+    for label in ("Sign up", "Create account", "Get a quote", "Book now", "Live chat"):
+        state = finished_state(history=("Search", "Go", label))
+        assert not verify(state, priced_card(), ALLOWED)["passed"], label
 
 
 def test_subdomains_of_an_approved_host_are_accepted():

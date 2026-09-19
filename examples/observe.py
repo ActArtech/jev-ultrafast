@@ -18,9 +18,6 @@ from urllib.parse import urlparse
 from jev_ultrafast import Agent
 from jev_ultrafast.browser import StalePage
 
-# The same code-owned scroll the snapshot offers as an action. The model never emits input events.
-SCROLL_DOWN = {"id": "scroll_down", "kind": "scroll", "label": "Scroll down", "delta": 560}
-
 # Read-only: visible anchors with their nearest listing-like surrounding text. No page mutation.
 EXTRACT = """(() => {
   const cards = [];
@@ -43,10 +40,12 @@ PRICE = re.compile(
     r"|\d[\d.,]*\s?(?:USD|EUR|GBP|CHF|AED|SAR|JPY|INR|AUD|CAD)\b"
 )
 
-# One executed control with a label like these fails the run's read-only check.
+# One executed control with a label like these fails the run's read-only check. A deny list of
+# common commerce/contact labels, not an exhaustive one; an unrecognized label is a reviewer question.
 PROHIBITED = re.compile(
-    r"sign in|log ?in|log ?on|add to cart|basket|checkout|place order|order now|buy now|"
-    r"enquir|inquir|request (?:a )?quote|contact|subscribe|wishlist|follow",
+    r"sign (?:in|up)|log ?in|log ?on|create (?:an )?account|register|"
+    r"add to cart|basket|cart\b|checkout|place order|order now|buy now|book now|"
+    r"enquir|inquir|(?:request|get) (?:a )?quote|contact|chat\b|subscribe|newsletter|wishlist|follow",
     re.IGNORECASE,
 )
 
@@ -64,11 +63,11 @@ def card_candidates(cards, price_pattern):
     return candidates
 
 
-def observation(card, observed_at, agent_status):
+def observation(card, agent_status):
     """A raw observation is evidence for a human reviewer, never a verified fact."""
     return {
         "source_url": card["href"],
-        "observed_at": observed_at,
+        "observed_at": card["observed_at"],
         "description_raw": " ".join(card["text"].split())[:1200],
         "price_raw": card["price_raw"],
         "evidence_text": card["evidence_text"],
@@ -101,18 +100,26 @@ def collect_cards(agent, price_pattern, max_scrolls, settle):
     cards = {}
     page = agent.state["page"]
     for _ in range(max_scrolls + 1):
+        # Stamp each read: a visible price is evidence about a page at a timestamp.
+        stamp = datetime.now(timezone.utc).isoformat()
         try:
             visible = browser.evaluate(EXTRACT) or []
         except StalePage:
             visible = []
         for card in visible:
-            cards.setdefault(card["href"] + "\n" + card["text"][:120], card)
-        if page["scroll"]["y"] + page["h"] >= page["scroll"]["height"] - 2:
+            cards.setdefault(card["href"] + "\n" + card["text"][:120], {**card, "observed_at": stamp})
+        # Scroll with the action this observed page offers; the snapshot includes scroll_down
+        # only while more content sits below the fold, so its absence ends the walk.
+        scroll = next((a for a in page["actions"] if a["id"] == "scroll_down"), None)
+        if scroll is None:
             break
-        # Act only on a fresh observation; a stale page is re-read, never re-scrolled blind.
-        if browser.fresh(page):
-            browser.act(SCROLL_DOWN, page)
-            time.sleep(settle)
+        try:
+            # Act only on a fresh observation; a stale page is re-read, never re-scrolled blind.
+            if browser.fresh(page):
+                browser.act(scroll, page)
+                time.sleep(settle)
+        except StalePage:
+            pass
         page = browser.observe(screenshot=False)
     agent.state["page"] = page
     agent.state["cards"] = card_candidates(list(cards.values()), price_pattern)
@@ -134,7 +141,7 @@ def main():
     if not on_approved_host(args.url, allowed):
         raise SystemExit("Start URL is outside the approved hostnames")
     price_pattern = re.compile(args.price)
-    observed_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     run_id = "OBS-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     agent = Agent(args.url, args.goal)
@@ -155,10 +162,10 @@ def main():
                 {
                     "run_id": run_id,
                     "start_url": args.url,
-                    "observed_at": observed_at,
+                    "started_at": started_at,
                     "agent_status": state["status"],
                     "verification": verification,
-                    "observations": [observation(card, observed_at, state["status"]) for card in candidates],
+                    "observations": [observation(card, state["status"]) for card in candidates],
                 },
                 indent=2,
             )

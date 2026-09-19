@@ -57,8 +57,10 @@ should act on. Accepting a record is a human decision that happens outside the r
    commercial terms, and it asks for a conclusion instead of an observation.
 2. **Approved hosts.** Keep the allowlist in version control. The example refuses a start URL
    outside it, and verification re-checks the final URL, including subdomains.
-3. **Prohibited controls.** A deny pattern runs over every executed action label — sign-in, cart,
-   checkout, order, enquiry, contact, subscribe. One hit fails the run.
+3. **Prohibited controls.** A deny pattern runs over every executed action label — sign-in and
+   sign-up, account creation, cart, checkout, order, book-now, enquiry and quote requests,
+   contact, chat, subscribe. One hit fails the run. The list denies common commerce and contact
+   labels, not all of them; an unrecognized label is a reviewer question.
 4. **Deterministic verification.** Independent of the model's `DONE`: the agent finished, the final
    host is approved, at least one priced card was captured, and the action history stays read-only.
 5. **Human review.** Nothing is auto-promoted. A run that produces zero candidates is a result to
